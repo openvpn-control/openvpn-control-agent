@@ -1,11 +1,13 @@
 # Сборка бинарников Linux (amd64, arm64) и загрузка в артефакты workflow.
-# Триггеры: push в main, pull_request, workflow_dispatch.
+# Триггеры: push в main, pull_request, push тега v*, workflow_dispatch.
 
 name: Build agent artifacts
 
 on:
   push:
     branches: [main, master]
+    tags:
+      - "v*"
   pull_request:
   workflow_dispatch:
 
@@ -26,9 +28,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Resolve artifact version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.ref_name }}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build Linux amd64 & arm64
         env:
-          VERSION: ${{ github.ref_name }}-${{ github.sha }}
+          VERSION: ${{ steps.ver.outputs.value }}
         run: |
           set -eux
           safe="${VERSION//\//-}"

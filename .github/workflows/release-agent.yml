@@ -1,17 +1,21 @@
-# Собирает Linux amd64/arm64 и прикрепляет к опубликованному GitHub Release.
-# Тег: git tag v1.0.0 && git push origin v1.0.0 → Releases → Publish release.
+# Собирает Linux amd64/arm64 и прикрепляет к GitHub Release.
+# Варианты: (1) git tag v1.0.0 && git push origin v1.0.0 — релиз и файлы создаются автоматически;
+# (2) вручную Releases → Publish release — workflow тоже отработает.
 
 name: Release agent binaries
 
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-agent-${{ github.event.release.tag_name }}
+  group: release-agent-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -20,13 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
       - name: Build Linux amd64 & arm64
         env:
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.tag.outputs.name }}
         run: |
           set -eux
           for goarch in amd64 arm64; do
@@ -41,10 +54,10 @@ jobs:
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ steps.tag.outputs.name }}
           files: |
-            openvpn-control-agent-${{ github.event.release.tag_name }}-linux-amd64
-            openvpn-control-agent-${{ github.event.release.tag_name }}-linux-arm64
+            openvpn-control-agent-${{ steps.tag.outputs.name }}-linux-amd64
+            openvpn-control-agent-${{ steps.tag.outputs.name }}-linux-arm64
             SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
