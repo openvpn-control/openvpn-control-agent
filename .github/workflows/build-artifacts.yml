@@ -1,0 +1,53 @@
+# Сборка бинарников Linux (amd64, arm64) и загрузка в артефакты workflow.
+# Триггеры: push в main, pull_request, workflow_dispatch.
+
+name: Build agent artifacts
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-artifacts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Linux amd64 & arm64
+        env:
+          VERSION: ${{ github.ref_name }}-${{ github.sha }}
+        run: |
+          set -eux
+          safe="${VERSION//\//-}"
+          for goarch in amd64 arm64; do
+            out="openvpn-control-agent-${safe}-linux-${goarch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" \
+              go build -trimpath -ldflags="-s -w -X openvpn-control-agent/internal.AgentVersion=${safe}" \
+              -o "${out}" ./cmd/agent
+          done
+          sha256sum openvpn-control-agent-${safe}-linux-amd64 \
+            openvpn-control-agent-${safe}-linux-arm64 > SHA256SUMS
+          echo "ARTIFACT_VERSION=${safe}" >> "$GITHUB_ENV"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvpn-control-agent-${{ env.ARTIFACT_VERSION }}
+          path: |
+            openvpn-control-agent-${{ env.ARTIFACT_VERSION }}-linux-amd64
+            openvpn-control-agent-${{ env.ARTIFACT_VERSION }}-linux-arm64
+            SHA256SUMS
+          if-no-files-found: error
