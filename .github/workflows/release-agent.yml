@@ -1,0 +1,50 @@
+# Собирает Linux amd64/arm64 и прикрепляет к опубликованному GitHub Release.
+# Тег: git tag v1.0.0 && git push origin v1.0.0 → Releases → Publish release.
+
+name: Release agent binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-agent-${{ github.event.release.tag_name }}
+  cancel-in-progress: true
+
+jobs:
+  attach-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Linux amd64 & arm64
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          set -eux
+          for goarch in amd64 arm64; do
+            out="openvpn-control-agent-${VERSION}-linux-${goarch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" \
+              go build -trimpath -ldflags="-s -w -X openvpn-control-agent/internal.AgentVersion=${VERSION}" \
+              -o "${out}" ./cmd/agent
+          done
+          sha256sum openvpn-control-agent-${VERSION}-linux-amd64 \
+            openvpn-control-agent-${VERSION}-linux-arm64 > SHA256SUMS
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            openvpn-control-agent-${{ github.event.release.tag_name }}-linux-amd64
+            openvpn-control-agent-${{ github.event.release.tag_name }}-linux-arm64
+            SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
