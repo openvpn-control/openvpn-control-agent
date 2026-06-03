@@ -5,7 +5,7 @@ version: "${NFPM_VERSION}"
 release: "1"
 section: utils
 priority: optional
-maintainer: "OpenVPN Control <https://github.com/openvpn-control/openvpn-control-agent>"
+maintainer: "OpenVPN Control <openvpn-control-agent@users.noreply.github.com>"
 description: |
   HTTP agent for OpenVPN nodes. Exposes host metrics and OpenVPN management
   integration for the OpenVPN Control panel.

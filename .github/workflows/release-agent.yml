@@ -32,6 +32,9 @@ jobs:
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.2
 
+      - name: Normalize packaging script line endings
+        run: sed -i 's/\r$//' packaging/build-packages.sh packaging/scripts/*.sh
+
       - name: Build Linux amd64 & arm64 and packages
         env:
           VERSION: ${{ steps.tag.outputs.name }}
@@ -52,6 +55,9 @@ jobs:
             cd dist/packages
             sha256sum ./* > SHA256SUMS-packages
           )
+          ls -la dist/packages
+          test "$(find dist/packages -maxdepth 1 -name '*.deb' | wc -l)" -eq 2
+          test "$(find dist/packages -maxdepth 1 -name '*.rpm' | wc -l)" -eq 2
 
       - name: Upload release assets to draft release
         uses: softprops/action-gh-release@v2
@@ -59,10 +65,13 @@ jobs:
           tag_name: ${{ steps.tag.outputs.name }}
           name: ${{ steps.tag.outputs.name }}
           draft: true
+          fail_on_unmatched_files: true
           files: |
             openvpn-control-agent-${{ steps.tag.outputs.name }}-linux-amd64
             openvpn-control-agent-${{ steps.tag.outputs.name }}-linux-arm64
             SHA256SUMS-binaries
-            dist/packages/*
+            dist/packages/*.deb
+            dist/packages/*.rpm
+            dist/packages/SHA256SUMS-packages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

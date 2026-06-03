@@ -31,6 +31,9 @@ jobs:
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.2
 
+      - name: Normalize packaging script line endings
+        run: sed -i 's/\r$//' packaging/build-packages.sh packaging/scripts/*.sh
+
       - name: Resolve artifact version
         id: ver
         run: |
@@ -57,10 +60,13 @@ jobs:
           done
           (
             cd dist/packages
-            sha256sum ./* > SHA256SUMS
+            sha256sum ./* > SHA256SUMS-packages
           )
           sha256sum openvpn-control-agent-${safe}-linux-amd64 \
             openvpn-control-agent-${safe}-linux-arm64 > SHA256SUMS-binaries
+          ls -la dist/packages
+          test "$(find dist/packages -maxdepth 1 -name '*.deb' | wc -l)" -eq 2
+          test "$(find dist/packages -maxdepth 1 -name '*.rpm' | wc -l)" -eq 2
           echo "ARTIFACT_VERSION=${safe}" >> "$GITHUB_ENV"
 
       - name: Upload binaries
@@ -71,5 +77,7 @@ jobs:
             openvpn-control-agent-${{ env.ARTIFACT_VERSION }}-linux-amd64
             openvpn-control-agent-${{ env.ARTIFACT_VERSION }}-linux-arm64
             SHA256SUMS-binaries
-            dist/packages/*
+            dist/packages/*.deb
+            dist/packages/*.rpm
+            dist/packages/SHA256SUMS-packages
           if-no-files-found: error

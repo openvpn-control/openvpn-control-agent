@@ -39,10 +39,13 @@ if ! command -v nfpm >/dev/null 2>&1; then
   exit 1
 fi
 
-nfpm pkg \
-  --config packaging/nfpm.generated.yaml \
-  --packager deb \
-  --packager rpm \
-  --target "$OUT_DIR"
+# nfpm accepts a single --packager flag; run twice for deb and rpm.
+for packager in deb rpm; do
+  nfpm pkg \
+    --config packaging/nfpm.generated.yaml \
+    --packager "${packager}" \
+    --target "$OUT_DIR"
+done
 
-echo "Packages written to $OUT_DIR"
+echo "Packages written to $OUT_DIR:"
+ls -la "$OUT_DIR"
