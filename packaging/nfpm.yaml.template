@@ -1,0 +1,39 @@
+name: openvpn-control-agent
+arch: ${NFPM_ARCH}
+platform: linux
+version: "${NFPM_VERSION}"
+release: "1"
+section: utils
+priority: optional
+maintainer: "OpenVPN Control <https://github.com/openvpn-control/openvpn-control-agent>"
+description: |
+  HTTP agent for OpenVPN nodes. Exposes host metrics and OpenVPN management
+  integration for the OpenVPN Control panel.
+license: MIT
+homepage: "https://github.com/openvpn-control/openvpn-control-agent"
+depends:
+  - systemd
+recommends:
+  - openvpn
+contents:
+  - src: ${NFPM_BINARY}
+    dst: /usr/bin/openvpn-control-agent
+    file_info:
+      mode: 0755
+  - src: ./packaging/openvpn-control-agent.service
+    dst: /lib/systemd/system/openvpn-control-agent.service
+    file_info:
+      mode: 0644
+  - src: ./packaging/openvpn-control-agent.default
+    dst: /etc/default/openvpn-control-agent
+    type: config|noreplace
+  - dst: /var/lib/openvpn-control-agent
+    type: dir
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh

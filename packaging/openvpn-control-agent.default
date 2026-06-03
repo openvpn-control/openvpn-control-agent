@@ -1,0 +1,5 @@
+# OpenVPN Control Agent environment (see BUILD-LINUX.md).
+AGENT_ADDR=0.0.0.0:9443
+AGENT_TOKEN_FILE=/var/lib/openvpn-control-agent/token
+OPENVPN_MGMT_ADDR=127.0.0.1:7505
+# OPENVPN_NET_INTERFACE=tun0

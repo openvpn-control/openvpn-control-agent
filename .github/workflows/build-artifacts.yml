@@ -1,4 +1,4 @@
-# Сборка бинарников Linux (amd64, arm64) и загрузка в артефакты workflow.
+# Сборка бинарников Linux (amd64, arm64), пакетов .deb/.rpm и загрузка в артефакты workflow.
 # Триггеры: push в main, pull_request, push тега v*, workflow_dispatch.
 
 name: Build agent artifacts
@@ -28,6 +28,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.2
+
       - name: Resolve artifact version
         id: ver
         run: |
@@ -43,14 +46,21 @@ jobs:
         run: |
           set -eux
           safe="${VERSION//\//-}"
+          mkdir -p dist/packages
           for goarch in amd64 arm64; do
             out="openvpn-control-agent-${safe}-linux-${goarch}"
             CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" \
               go build -trimpath -ldflags="-s -w -X openvpn-control-agent/internal.AgentVersion=${safe}" \
               -o "${out}" ./cmd/agent
+            chmod +x packaging/scripts/*.sh packaging/build-packages.sh
+            ./packaging/build-packages.sh "${safe}" "${goarch}" "${out}" dist/packages
           done
+          (
+            cd dist/packages
+            sha256sum ./* > SHA256SUMS
+          )
           sha256sum openvpn-control-agent-${safe}-linux-amd64 \
-            openvpn-control-agent-${safe}-linux-arm64 > SHA256SUMS
+            openvpn-control-agent-${safe}-linux-arm64 > SHA256SUMS-binaries
           echo "ARTIFACT_VERSION=${safe}" >> "$GITHUB_ENV"
 
       - name: Upload binaries
@@ -60,5 +70,6 @@ jobs:
           path: |
             openvpn-control-agent-${{ env.ARTIFACT_VERSION }}-linux-amd64
             openvpn-control-agent-${{ env.ARTIFACT_VERSION }}-linux-arm64
-            SHA256SUMS
+            SHA256SUMS-binaries
+            dist/packages/*
           if-no-files-found: error

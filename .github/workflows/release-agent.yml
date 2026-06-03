@@ -1,12 +1,9 @@
-# Собирает Linux amd64/arm64 и прикрепляет к GitHub Release.
-# Варианты: (1) git tag v1.0.0 && git push origin v1.0.0 — релиз и файлы создаются автоматически;
-# (2) вручную Releases → Publish release — workflow тоже отработает.
+# Собирает Linux amd64/arm64, пакеты .deb/.rpm (systemd) и прикрепляет к черновику GitHub Release.
+# Push тега v*: создаётся draft с артефактами → проверка → вручную Publish release.
 
 name: Release agent binaries
 
 on:
-  release:
-    types: [published]
   push:
     tags:
       - "v*"
@@ -15,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-agent-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+  group: release-agent-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -26,38 +23,46 @@ jobs:
 
       - name: Resolve release tag
         id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - name: Build Linux amd64 & arm64
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.2
+
+      - name: Build Linux amd64 & arm64 and packages
         env:
           VERSION: ${{ steps.tag.outputs.name }}
         run: |
           set -eux
+          mkdir -p dist/packages
           for goarch in amd64 arm64; do
             out="openvpn-control-agent-${VERSION}-linux-${goarch}"
             CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" \
               go build -trimpath -ldflags="-s -w -X openvpn-control-agent/internal.AgentVersion=${VERSION}" \
               -o "${out}" ./cmd/agent
+            chmod +x packaging/scripts/*.sh packaging/build-packages.sh
+            ./packaging/build-packages.sh "${VERSION}" "${goarch}" "${out}" dist/packages
           done
           sha256sum openvpn-control-agent-${VERSION}-linux-amd64 \
-            openvpn-control-agent-${VERSION}-linux-arm64 > SHA256SUMS
+            openvpn-control-agent-${VERSION}-linux-arm64 > SHA256SUMS-binaries
+          (
+            cd dist/packages
+            sha256sum ./* > SHA256SUMS-packages
+          )
 
-      - name: Upload binaries to release
+      - name: Upload release assets to draft release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          draft: true
           files: |
             openvpn-control-agent-${{ steps.tag.outputs.name }}-linux-amd64
             openvpn-control-agent-${{ steps.tag.outputs.name }}-linux-arm64
-            SHA256SUMS
+            SHA256SUMS-binaries
+            dist/packages/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

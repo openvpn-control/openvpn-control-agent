@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenVPN Control Agent
+Documentation=https://github.com/openvpn-control/openvpn-control-agent
+After=network-online.target openvpn.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/openvpn-control-agent
+ExecStart=/usr/bin/openvpn-control-agent
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

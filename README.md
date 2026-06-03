@@ -27,7 +27,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ope
 
 1. `git tag v1.0.0 && git push origin v1.0.0`
 2. **Releases → Create release** по тегу → **Publish release**
-3. Воркфлоу **Release agent binaries** прикрепит `openvpn-control-agent-<тег>-linux-{amd64,arm64}` и `SHA256SUMS`.
+3. Воркфлоу **Release agent binaries** прикрепит:
+   - `openvpn-control-agent-<тег>-linux-{amd64,arm64}` и `SHA256SUMS-binaries`
+   - `.deb` и `.rpm` (amd64/arm64) с unit `openvpn-control-agent.service` — `SHA256SUMS-packages` в каталоге пакетов
+
+**Установка из пакета (Debian/Ubuntu):**
+
+```bash
+sudo dpkg -i openvpn-control-agent_<версия>_amd64.deb
+sudo systemctl status openvpn-control-agent
+```
+
+**Установка из пакета (RHEL/Alma/Rocky):**
+
+```bash
+sudo rpm -ivh openvpn-control-agent-<версия>-1.x86_64.rpm
+sudo systemctl status openvpn-control-agent
+```
+
+После установки правьте `/etc/default/openvpn-control-agent`, затем `sudo systemctl restart openvpn-control-agent`. Токен: `/var/lib/openvpn-control-agent/token`.
 
 **Settings → Actions → General:** для загрузки ассетов к релизу нужны права **Read and write** у `GITHUB_TOKEN`.
 

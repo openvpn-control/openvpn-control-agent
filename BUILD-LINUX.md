@@ -2,6 +2,42 @@
 
 Агент собирается под Linux как **полностью статический** исполняемый файл (`CGO_ENABLED=0`), без привязки к версии **glibc** на машине сборки — такой бинарник запускается и на Ubuntu 20.04 (glibc 2.31), и на более новых дистрибутивах. Он слушает HTTP (по умолчанию `:9443`), читает метрики хоста и опрашивает OpenVPN через management-интерфейс.
 
+## Установка из .deb / .rpm (рекомендуется)
+
+В [GitHub Releases](https://github.com/openvpn-control/openvpn-control-agent/releases) (или артефактах CI) доступны пакеты для **amd64** и **arm64**. Пакет:
+
+- кладёт бинарник в `/usr/bin/openvpn-control-agent`;
+- создаёт `/var/lib/openvpn-control-agent` для токена;
+- ставит `/etc/default/openvpn-control-agent` (не перезаписывается при обновлении, если вы его меняли);
+- регистрирует и запускает `openvpn-control-agent.service` через systemd.
+
+**Debian / Ubuntu:**
+
+```bash
+sudo dpkg -i openvpn-control-agent_<версия>_amd64.deb
+sudo systemctl status openvpn-control-agent --no-pager
+```
+
+**RHEL / AlmaLinux / Rocky:**
+
+```bash
+sudo rpm -ivh openvpn-control-agent-<версия>-1.x86_64.rpm
+sudo systemctl status openvpn-control-agent --no-pager
+```
+
+После установки при необходимости отредактируйте `/etc/default/openvpn-control-agent` и выполните `sudo systemctl restart openvpn-control-agent`. Токен для панели: `sudo cat /var/lib/openvpn-control-agent/token`.
+
+### Сборка пакетов локально
+
+Из корня репозитория (нужны [nfpm](https://nfpm.goreleaser.com/) и `envsubst` из пакета `gettext`):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o openvpn-control-agent ./cmd/agent
+go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.2
+chmod +x packaging/scripts/*.sh packaging/build-packages.sh
+./packaging/build-packages.sh v0.0.0-local amd64 ./openvpn-control-agent dist/packages
+```
+
 ## Требования
 
 - **Go** не ниже **1.22** (см. `go.mod`).
