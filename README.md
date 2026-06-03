@@ -1,5 +1,9 @@
 # OpenVPN Control Agent
 
+[![CI Tests](https://github.com/openvpn-control/openvpn-control-agent/actions/workflows/ci-tests.yml/badge.svg)](https://github.com/openvpn-control/openvpn-control-agent/actions/workflows/ci-tests.yml)
+[![Build agent artifacts](https://github.com/openvpn-control/openvpn-control-agent/actions/workflows/build-artifacts.yml/badge.svg)](https://github.com/openvpn-control/openvpn-control-agent/actions/workflows/build-artifacts.yml)
+[![Release agent binaries](https://github.com/openvpn-control/openvpn-control-agent/actions/workflows/release-agent.yml/badge.svg)](https://github.com/openvpn-control/openvpn-control-agent/actions/workflows/release-agent.yml)
+
 **Лицензия:** [MIT](LICENSE)
 
 ## Установка

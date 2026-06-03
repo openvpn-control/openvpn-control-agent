@@ -564,6 +564,12 @@ func backupSuffixNow() string {
 }
 
 func createConfigBackup(confPath string) (string, error) {
+	if _, err := os.Stat(confPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat current config: %w", err)
+	}
 	backup := confPath + "." + backupSuffixNow()
 	original, err := os.ReadFile(confPath)
 	if err != nil {
@@ -614,6 +620,12 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 		}
 	}
 	stagedData = rewriteInvalidGroupInConfig(stagedData)
+	if err := os.MkdirAll(filepath.Dir(confPath), 0o755); err != nil {
+		return nil, &ApplyConfigFailure{
+			Err:   fmt.Errorf("create config dir: %w", err),
+			Hints: []string{"Создайте каталог " + filepath.Dir(confPath) + " или проверьте OPENVPN_SERVER_CONF на агенте."},
+		}
+	}
 	if err := os.WriteFile(confPath, stagedData, 0o600); err != nil {
 		return nil, &ApplyConfigFailure{
 			Err:   fmt.Errorf("install config: %w", err),
@@ -635,12 +647,23 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 		}, nil
 	}
 
-	rollbackErr := restoreConfigFromBackup(confPath, backupPath)
-	rolledBack := rollbackErr == nil
+	var rolledBack bool
+	if strings.TrimSpace(backupPath) != "" {
+		rollbackErr := restoreConfigFromBackup(confPath, backupPath)
+		rolledBack = rollbackErr == nil
+	} else {
+		rolledBack = os.Remove(confPath) == nil
+	}
 
-	hints := []string{"Не удалось применить конфигурацию: выполнен откат к предыдущему файлу."}
-	if !rolledBack {
-		hints = append(hints, "Откат завершился с ошибкой — проверьте права доступа к конфигурационным файлам.")
+	hints := []string{"Не удалось перезапустить OpenVPN после установки конфигурации."}
+	if rolledBack {
+		if backupPath != "" {
+			hints = append(hints, "Выполнен откат к предыдущему server.conf.")
+		} else {
+			hints = append(hints, "Первичная установка отменена: созданный server.conf удалён.")
+		}
+	} else {
+		hints = append(hints, "Откат не удался — проверьте права на " + filepath.Dir(confPath) + ".")
 	}
 	return nil, &ApplyConfigFailure{
 		Err:        fmt.Errorf("restart openvpn service: %w", restartErr),
