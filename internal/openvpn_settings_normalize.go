@@ -160,6 +160,9 @@ func fmtSettingString(v any) string {
 	if v == nil {
 		return ""
 	}
-	return strings.TrimSpace(strings.Trim(strings.ReplaceAll(strings.ReplaceAll(
-		strings.TrimSpace(strings.Trim(fmt.Sprint(v), `"`)), "\n", " "), "\r", ""))
+	s := strings.TrimSpace(fmt.Sprint(v))
+	s = strings.Trim(s, `"`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.TrimSpace(s)
 }
