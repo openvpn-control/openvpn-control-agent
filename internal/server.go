@@ -347,22 +347,21 @@ func (s *AgentServer) openvpnApplyConfig(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "OPENVPN_SERVER_CONF is not set", http.StatusServiceUnavailable)
 			return
 		}
-		dir := filepath.Dir(s.ServerConfPath)
-		stagedPath := filepath.Join(dir, stagedServerConfigName)
-		if _, err := os.Stat(stagedPath); err != nil {
-			if os.IsNotExist(err) {
+		stagedPath, confPath, stagedErr := findStagedServerConfig(s.ServerConfPath, s.ServiceUnit)
+		if stagedErr != nil {
+			if os.IsNotExist(stagedErr) {
 				http.Error(w, "staged config not found; save settings first", http.StatusBadRequest)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, stagedErr.Error(), http.StatusInternalServerError)
 			return
 		}
 		restartCommand := s.serviceCommand("restart")
+		serviceUnit := DetectOpenVPNServiceUnit(s.ServiceUnit)
 		if restartCommand == "" {
-			restartCommand = "systemctl restart " + detectOpenVPNServiceUnit(s.ServiceUnit)
+			restartCommand = "systemctl restart " + serviceUnit
 		}
-		serviceUnit := detectOpenVPNServiceUnit(s.ServiceUnit)
-		res, applyErr := ApplyStagedServerConfig(s.ServerConfPath, stagedPath, restartCommand, serviceUnit)
+		res, applyErr := ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit)
 		if applyErr != nil {
 			fail, ok := applyErr.(*ApplyConfigFailure)
 			w.Header().Set("Content-Type", "application/json")
@@ -392,7 +391,7 @@ func (s *AgentServer) openvpnApplyConfig(w http.ResponseWriter, r *http.Request)
 			"backupPath":      res.BackupPath,
 			"output":          res.Output,
 			"serviceLog":      res.ServiceLog,
-			"configPath":      s.ServerConfPath,
+			"configPath":      confPath,
 			"serviceUnit":     serviceUnit,
 			"stagedConfigPath": stagedPath,
 		})

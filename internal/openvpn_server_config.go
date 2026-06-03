@@ -634,6 +634,13 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 	}
 	_ = os.Remove(stagedPath)
 
+	if _, err := os.Stat(confPath); err != nil {
+		return nil, &ApplyConfigFailure{
+			Err:   fmt.Errorf("config missing after install: %w", err),
+			Hints: []string{"Файл конфигурации не найден по пути " + confPath + ". Проверьте OPENVPN_SERVER_CONF и unit " + serviceUnit + "."},
+		}
+	}
+
 	startedAt := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -651,19 +658,16 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 	if strings.TrimSpace(backupPath) != "" {
 		rollbackErr := restoreConfigFromBackup(confPath, backupPath)
 		rolledBack = rollbackErr == nil
-	} else {
-		rolledBack = os.Remove(confPath) == nil
 	}
 
 	hints := []string{"Не удалось перезапустить OpenVPN после установки конфигурации."}
+	hints = append(hints, "Конфиг записан в "+confPath+". Проверьте: systemctl cat "+serviceUnit)
 	if rolledBack {
-		if backupPath != "" {
-			hints = append(hints, "Выполнен откат к предыдущему server.conf.")
-		} else {
-			hints = append(hints, "Первичная установка отменена: созданный server.conf удалён.")
-		}
-	} else {
-		hints = append(hints, "Откат не удался — проверьте права на " + filepath.Dir(confPath) + ".")
+		hints = append(hints, "Выполнен откат к предыдущему server.conf.")
+	} else if strings.TrimSpace(backupPath) == "" {
+		hints = append(hints, "Первичная установка: файл конфигурации оставлен на диске — исправьте ошибки и примените снова.")
+	} else if !rolledBack {
+		hints = append(hints, "Откат не удался — проверьте права на "+filepath.Dir(confPath)+".")
 	}
 	return nil, &ApplyConfigFailure{
 		Err:        fmt.Errorf("restart openvpn service: %w", restartErr),
