@@ -234,6 +234,7 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 			if bin == "" {
 				bin = "openvpn"
 			}
+			normalizeRuntimeUserGroup(body.Settings)
 			stagedPath, hints, err := ApplyServerSettings(s.ServerConfPath, bin, body.Settings)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -304,8 +305,14 @@ func (s *AgentServer) openvpnCheckConfig(w http.ResponseWriter, r *http.Request)
 		if _, statErr := os.Stat(stagedPath); statErr == nil {
 			targetPath = stagedPath
 		}
-		commandStr := BuildOpenVPNCheckCommand(bin, targetPath)
-		hints, err := ValidateOpenVPNConfig(context.Background(), bin, targetPath)
+		validatePath, cleanup, prepErr := configPathForPrivilegeCheck(targetPath)
+		if prepErr != nil {
+			http.Error(w, prepErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer cleanup()
+		commandStr := BuildOpenVPNCheckCommand(bin, validatePath)
+		hints, err := ValidateOpenVPNConfig(context.Background(), bin, validatePath)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)

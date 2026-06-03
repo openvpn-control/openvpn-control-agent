@@ -1,10 +1,10 @@
 # OpenVPN Control Agent
 
-**Лицензия:** [MIT](LICENSE) · **Сборка из исходников:** [BUILD-LINUX.md](BUILD-LINUX.md)
+**Лицензия:** [MIT](LICENSE)
 
 ## Установка
 
-Скачайте `.deb` или `.rpm` нужной архитектуры (amd64 / arm64) со [страницы релизов](https://github.com/openvpn-control/openvpn-control-agent/releases).
+Скачайте `.deb` или `.rpm` (amd64 / arm64) со [страницы релизов](https://github.com/openvpn-control/openvpn-control-agent/releases).
 
 ### Debian / Ubuntu (apt)
 
@@ -116,15 +116,3 @@ curl -v http://<внешний-IP-сервера>:9443/health
 | `AGENT_TOKEN_FILE` | `/var/lib/openvpn-control-agent/token` |
 | `OPENVPN_MGMT_ADDR` | `127.0.0.1:7505` |
 | `OPENVPN_NET_INTERFACE` | *(не задан)* |
-
-## Сборка
-
-```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o openvpn-control-agent ./cmd/agent
-```
-
-## Тесты
-
-```bash
-go test ./...
-```
