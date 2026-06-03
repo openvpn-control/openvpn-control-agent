@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -296,6 +297,11 @@ func buildManagedDirectiveLines(k string, val any) []string {
 		if s == "" {
 			return nil
 		}
+		if k == "fragment" {
+			if n, err := strconv.ParseFloat(s, 64); err == nil && n == 0 {
+				return nil
+			}
+		}
 		if strings.ContainsAny(s, " \t\"") && !multiTokenDirective(k) {
 			return []string{fmt.Sprintf("%s %q", k, s)}
 		}
@@ -338,33 +344,44 @@ func isTruthy(v any) bool {
 	}
 }
 
-// configPathForPrivilegeCheck returns a copy of the config without user/group (privilege drop is distro-specific).
-func configPathForPrivilegeCheck(src string) (path string, cleanup func(), err error) {
+// writeMutatedCheckConfig writes a temp config with fixes applied (auth/fragment/group/cipher).
+func writeMutatedCheckConfig(src, serviceUnit string) (path string, cleanup func(), err error) {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return "", nil, err
 	}
-	var out []string
-	for _, raw := range strings.Split(string(data), "\n") {
-		tok := firstToken(stripInlineComment(raw))
-		if tok == "user" || tok == "group" {
-			continue
-		}
-		out = append(out, raw)
+	data = mutateConfigForOpenVPN(data, serviceUnit)
+	if openVPNServiceIsActive(serviceUnit) {
+		data = rewriteValidateInstanceOverrides(data)
 	}
 	tmp := filepath.Join(filepath.Dir(src), checkServerConfigName)
-	if err := os.WriteFile(tmp, []byte(strings.Join(out, "\n")), 0o600); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return "", nil, err
 	}
 	return tmp, func() { _ = os.Remove(tmp) }, nil
 }
 
+const (
+	openvpnValidateCheckPort      = 61194
+	openvpnValidateManagementPort = 7506
+)
+
 // ValidateOpenVPNConfig запускает openvpn с конфигом; при ошибках парсинга процесс обычно сразу пишет в stderr.
-func ValidateOpenVPNConfig(ctx context.Context, openvpnBin, configPath string) (hints []string, err error) {
+// extraArgs — флаги из systemd ExecStart (--cipher/--data-ciphers), чтобы проверка совпадала с restart службы.
+// output — полный stdout/stderr OpenVPN (для UI); err — краткое сообщение.
+func ValidateOpenVPNConfig(ctx context.Context, openvpnBin, configPath string, extraArgs []string) (hints []string, output string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, openvpnBin, "--config", configPath, "--verb", "4")
+	absConfig, absErr := filepath.Abs(configPath)
+	if absErr != nil {
+		absConfig = configPath
+	}
+	args := []string{openvpnBin}
+	args = append(args, extraArgs...)
+	args = append(args, "--config", absConfig, "--verb", "4")
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir = filepath.Dir(absConfig)
 
 	var out strings.Builder
 	cmd.Stdout = &out
@@ -375,7 +392,7 @@ func ValidateOpenVPNConfig(ctx context.Context, openvpnBin, configPath string) (
 		return []string{
 			"Убедитесь, что бинарник OpenVPN установлен и путь OPENVPN_BINARY верен.",
 			"Проверьте права пользователя, под которым запущен агент (нужен запуск openvpn).",
-		}, fmt.Errorf("openvpn start: %w", startErr)
+		}, "", fmt.Errorf("openvpn start: %w", startErr)
 	}
 
 	done := make(chan error, 1)
@@ -401,42 +418,82 @@ func ValidateOpenVPNConfig(ctx context.Context, openvpnBin, configPath string) (
 				"Убедитесь, что пути к ca/cert/key/dh/tls-crypt в конфиге существуют на сервере.",
 			}
 		}
-		return hints, errors.New(extractOpenVPNFatalMessage(rawOut))
+		return hints, rawOut, errors.New(extractOpenVPNFatalMessage(rawOut))
 	}
 
 	if waitErr != nil && !errors.Is(waitErr, context.DeadlineExceeded) && !errors.Is(waitErr, context.Canceled) {
 		// быстрый ненулевой код без явного FATAL
-		if strings.TrimSpace(out.String()) != "" {
-			return hintsForOpenVPNOutput(out.String()), fmt.Errorf("openvpn: %w — %s", waitErr, strings.TrimSpace(out.String()))
+		if strings.TrimSpace(rawOut) != "" {
+			return hintsForOpenVPNOutput(rawOut), rawOut, fmt.Errorf("openvpn: %w — %s", waitErr, strings.TrimSpace(rawOut))
 		}
 	}
 
 	// Таймаут без явной ошибки — считаем, что конфиг принят (сервер пошёл в работу / завис на bind).
-	return nil, nil
+	return nil, rawOut, nil
 }
 
-func BuildOpenVPNCheckCommand(openvpnBin, configPath string) string {
+func BuildOpenVPNCheckCommand(openvpnBin, configPath string, extraArgs []string) string {
 	bin := strings.TrimSpace(openvpnBin)
 	if bin == "" {
 		bin = "openvpn"
 	}
-	return fmt.Sprintf("%s --config %s --verb 4", bin, configPath)
+	var b strings.Builder
+	b.WriteString(bin)
+	for _, a := range extraArgs {
+		if strings.ContainsAny(a, " \t") {
+			b.WriteString(" ")
+			b.WriteString(strconv.Quote(a))
+		} else {
+			b.WriteString(" ")
+			b.WriteString(a)
+		}
+	}
+	b.WriteString(" --config ")
+	b.WriteString(configPath)
+	b.WriteString(" --verb 4")
+	return b.String()
 }
 
 func extractOpenVPNFatalMessage(log string) string {
-	lines := strings.Split(log, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		s := strings.TrimSpace(lines[i])
+	lines := strings.Split(strings.ReplaceAll(log, "\r\n", "\n"), "\n")
+	var (
+		optionsErr string
+		fatalLine  string
+		beforeExit string
+	)
+	for i, raw := range lines {
+		s := strings.TrimSpace(raw)
 		if s == "" {
 			continue
 		}
 		low := strings.ToLower(s)
-		if strings.Contains(low, "options error") ||
-			strings.Contains(low, "exiting due to fatal error") ||
-			strings.Contains(low, "failed to find gid") ||
-			strings.Contains(low, "failed to find uid") {
+		if strings.Contains(low, "options error") {
+			optionsErr = s
+		}
+		if strings.Contains(low, "failed to find gid") || strings.Contains(low, "failed to find uid") {
 			return s
 		}
+		if strings.Contains(low, "exiting due to fatal error") {
+			fatalLine = s
+			if i > 0 {
+				prev := strings.TrimSpace(lines[i-1])
+				if prev != "" && !strings.Contains(strings.ToLower(prev), "exiting due to fatal") {
+					beforeExit = prev
+				}
+			}
+		}
+	}
+	if optionsErr != "" {
+		return optionsErr
+	}
+	if beforeExit != "" && fatalLine != "" {
+		return beforeExit + " — " + fatalLine
+	}
+	if beforeExit != "" {
+		return beforeExit
+	}
+	if fatalLine != "" {
+		return fatalLine
 	}
 	return strings.TrimSpace(log)
 }
@@ -457,8 +514,8 @@ func hintsForOpenVPNOutput(log string) []string {
 	if strings.Contains(low, "permission denied") || strings.Contains(low, "access denied") {
 		h = append(h, "Проверьте права на файлы сертификатов, ключей и каталога /var/log/openvpn.")
 	}
-	if strings.Contains(low, "address already in use") || strings.Contains(low, "bind") {
-		h = append(h, "Порт занят: смените port/proto или остановите другой процесс на этом порту.")
+	if strings.Contains(low, "address already in use") || strings.Contains(low, "errno=98") {
+		h = append(h, "Порт занят: OpenVPN уже запущен. Агент проверяет конфиг на отдельном порту — обновите openvpn-control-agent.")
 	}
 	if strings.Contains(low, "must define dh") || strings.Contains(low, "--dh") {
 		h = append(h, "Задайте директиву dh (путь к файлу DH) в настройках OpenVPN и создайте/импортируйте DH на вкладке «Сертификаты и ключи» (обычно /etc/openvpn/dh.pem).")
@@ -472,8 +529,18 @@ func hintsForOpenVPNOutput(log string) []string {
 	if strings.Contains(low, "options error") && (strings.Contains(low, "cipher") || strings.Contains(low, "must define")) {
 		h = append(h, "Для OpenVPN 2.5+ укажите data-ciphers (например AES-256-GCM:AES-128-GCM) и не используйте устаревший cipher.")
 	}
-	if strings.Contains(low, "mtu") {
-		h = append(h, "Попробуйте уменьшить tun-mtu или включить/настроить fragment/mssfix.")
+	if strings.Contains(low, "auth") && (strings.Contains(low, "gcm") || strings.Contains(low, "aead") || strings.Contains(low, "data-ciphers")) {
+		h = append(h, "При шифрах AES-*-GCM в data-ciphers уберите директиву auth из server.conf (панель больше не добавляет auth SHA256 для GCM).")
+	}
+	if strings.Contains(low, "management") {
+		h = append(h, "Management: формат «IP порт» через пробел, например 127.0.0.1 7505 (не 127.0.0.1:7505).")
+	}
+	if strings.Contains(low, "options error") &&
+		(strings.Contains(low, "fragment") || strings.Contains(low, "mssfix") || strings.Contains(low, "tun-mtu")) {
+		h = append(h, "Уберите fragment 0 из конфига; для mssfix/fragment задайте ненулевые значения или очистите поля в панели.")
+	}
+	if strings.Contains(low, "options error") && (strings.Contains(low, "cipher") || strings.Contains(low, "data-ciphers")) {
+		h = append(h, "На RHEL unit openvpn-server@ часто задаёт --cipher и --data-ciphers в ExecStart — не дублируйте cipher/data-ciphers в server.conf.")
 	}
 	if len(h) == 0 {
 		h = append(h, "Сохраните вывод журнала OpenVPN и сверьте последнюю добавленную директиву с документацией.")
@@ -534,29 +601,43 @@ func rewriteInvalidGroupInConfig(data []byte) []byte {
 }
 
 // ApplyServerSettings пишет черновой конфиг во временный файл рядом с рабочим и проверяет его OpenVPN.
-func ApplyServerSettings(confPath, openvpnBin string, settings map[string]any) (tmpPath string, hints []string, err error) {
-	normalizeRuntimeUserGroup(settings)
+func ApplyServerSettings(confPath, openvpnBin, serviceUnit string, settings map[string]any) (tmpPath string, hints []string, err error) {
+	normalizeServerSettings(settings, serviceUnit)
 	data, err := MergeServerSettings(confPath, settings)
 	if err != nil {
 		return "", nil, err
 	}
 	dir := filepath.Dir(confPath)
 	tmp := filepath.Join(dir, stagedServerConfigName)
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, mutateConfigForOpenVPN(data, serviceUnit), 0o600); err != nil {
 		return "", nil, fmt.Errorf("write temp config: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	validatePath, cleanup, prepErr := configPathForPrivilegeCheck(tmp)
-	if prepErr != nil {
-		return tmp, nil, prepErr
-	}
-	defer cleanup()
-	if h, vErr := ValidateOpenVPNConfig(ctx, openvpnBin, validatePath); vErr != nil {
+	extra := execStartCryptoArgsForValidate(serviceUnit)
+	if h, _, vErr := ValidateOpenVPNConfig(ctx, openvpnBin, tmp, extra); vErr != nil {
 		return tmp, h, vErr
 	}
 	return tmp, nil, nil
+}
+
+func rewriteValidateInstanceOverrides(data []byte) []byte {
+	var out []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		tok := firstToken(stripInlineComment(raw))
+		if tok == "port" || tok == "management" || tok == "status" {
+			continue
+		}
+		out = append(out, raw)
+	}
+	out = append(out,
+		"",
+		"# openvpn-control: validate-only (production OpenVPN is already running)",
+		fmt.Sprintf("port %d", openvpnValidateCheckPort),
+		fmt.Sprintf("management 127.0.0.1 %d", openvpnValidateManagementPort),
+	)
+	return []byte(strings.Join(out, "\n"))
 }
 
 func backupSuffixNow() string {
@@ -619,7 +700,7 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 			Hints: []string{"Временный конфиг не найден. Сохраните настройки и проверьте конфигурацию заново."},
 		}
 	}
-	stagedData = rewriteInvalidGroupInConfig(stagedData)
+	stagedData = mutateConfigForOpenVPN(stagedData, serviceUnit)
 	if err := os.MkdirAll(filepath.Dir(confPath), 0o755); err != nil {
 		return nil, &ApplyConfigFailure{
 			Err:   fmt.Errorf("create config dir: %w", err),
@@ -662,6 +743,19 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 
 	hints := []string{"Не удалось перезапустить OpenVPN после установки конфигурации."}
 	hints = append(hints, "Конфиг записан в "+confPath+". Проверьте: systemctl cat "+serviceUnit)
+	if skip := openVPNConfigKeysSetOnExecStart(serviceUnit); len(skip) > 0 {
+		var keys []string
+		for k := range skip {
+			keys = append(keys, k)
+		}
+		hints = append(hints, "В unit systemd уже заданы параметры "+strings.Join(keys, ", ")+
+			" — они не дублируются в server.conf.")
+	}
+	if detail := extractOpenVPNFatalMessage(serviceLog); detail != "" && !strings.Contains(strings.ToLower(detail), "exiting due to fatal error") {
+		hints = append(hints, detail)
+	} else if detail := extractOpenVPNFatalMessage(serviceLog + "\n" + output); detail != "" {
+		hints = append(hints, detail)
+	}
 	if rolledBack {
 		hints = append(hints, "Выполнен откат к предыдущему server.conf.")
 	} else if strings.TrimSpace(backupPath) == "" {

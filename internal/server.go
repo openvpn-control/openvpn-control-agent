@@ -234,8 +234,8 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 			if bin == "" {
 				bin = "openvpn"
 			}
-			normalizeRuntimeUserGroup(body.Settings)
-			stagedPath, hints, err := ApplyServerSettings(s.ServerConfPath, bin, body.Settings)
+			unit := DetectOpenVPNServiceUnit(s.ServiceUnit)
+			stagedPath, hints, err := ApplyServerSettings(s.ServerConfPath, bin, unit, body.Settings)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -302,36 +302,44 @@ func (s *AgentServer) openvpnCheckConfig(w http.ResponseWriter, r *http.Request)
 		dir := filepath.Dir(s.ServerConfPath)
 		stagedPath := filepath.Join(dir, stagedServerConfigName)
 		targetPath := s.ServerConfPath
-		if _, statErr := os.Stat(stagedPath); statErr == nil {
-			targetPath = stagedPath
+		checkedSource := "active"
+		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("source")), "staged") {
+			if _, statErr := os.Stat(stagedPath); statErr == nil {
+				targetPath = stagedPath
+				checkedSource = "staged"
+			}
 		}
-		validatePath, cleanup, prepErr := configPathForPrivilegeCheck(targetPath)
+		unit := DetectOpenVPNServiceUnit(s.ServiceUnit)
+		checkPath, cleanup, prepErr := writeMutatedCheckConfig(targetPath, unit)
 		if prepErr != nil {
 			http.Error(w, prepErr.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer cleanup()
-		commandStr := BuildOpenVPNCheckCommand(bin, validatePath)
-		hints, err := ValidateOpenVPNConfig(context.Background(), bin, validatePath)
+		extra := execStartCryptoArgsForValidate(unit)
+		commandStr := BuildOpenVPNCheckCommand(bin, checkPath, extra)
+		hints, output, err := ValidateOpenVPNConfig(context.Background(), bin, checkPath, extra)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         false,
-				"error":      err.Error(),
-				"output":     err.Error(),
-				"command":    commandStr,
-				"hints":      hints,
-				"configPath": targetPath,
+				"ok":            false,
+				"error":         err.Error(),
+				"output":        output,
+				"command":       commandStr,
+				"hints":         hints,
+				"configPath":    targetPath,
+				"checkedSource": checkedSource,
 			})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":         true,
-			"message":    "Конфигурация OpenVPN прошла проверку.",
-			"output":     "",
-			"command":    commandStr,
-			"configPath": targetPath,
+			"ok":            true,
+			"message":       "Конфигурация OpenVPN прошла проверку.",
+			"output":        output,
+			"command":       commandStr,
+			"configPath":    targetPath,
+			"checkedSource": checkedSource,
 		})
 	})(w, r)
 }

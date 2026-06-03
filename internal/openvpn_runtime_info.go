@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,18 +94,99 @@ func DetectOpenVPNRuntimeInfo(ctx context.Context, bin, confPath, serverLogPath,
 		}
 	}
 
-	if mgmt != nil {
-		mgmtCtx, cancelMgmt := context.WithTimeout(ctx, 3*time.Second)
-		defer cancelMgmt()
-		if _, err := mgmt.GetClients(mgmtCtx); err == nil {
-			info.Running = true
-		}
-	}
-
 	resolveServerLogPath(&info, serverLogPath)
 	detectOpenVPNServiceState(ctx, &info)
+
+	mgmtTimeout := 3 * time.Second
+	if mgmt != nil && mgmt.Timeout > 0 {
+		mgmtTimeout = mgmt.Timeout
+	}
+	if reachable, addr := probeOpenVPNManagement(ctx, confPath, mgmtAddr, mgmt, mgmtTimeout); reachable {
+		info.Running = true
+		if addr != "" {
+			info.ManagementAddr = addr
+		}
+	} else if openVPNServiceProcessRunning(&info) {
+		info.Running = true
+	}
+
 	collectIncrementalServerLogs(&info)
 	return info
+}
+
+func parseManagementListenAddr(directive string) string {
+	directive = strings.TrimSpace(directive)
+	if directive == "" {
+		return ""
+	}
+	fields := strings.Fields(directive)
+	if len(fields) < 2 {
+		return ""
+	}
+	host, port := fields[0], fields[1]
+	if strings.Contains(host, ":") {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func managementAddrsToProbe(confPath, defaultAddr string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" || seen[addr] {
+			return
+		}
+		seen[addr] = true
+		out = append(out, addr)
+	}
+	add(defaultAddr)
+	if confPath != "" {
+		if settings, err := ReadServerSettings(confPath); err == nil {
+			if raw, ok := settings["management"].(string); ok {
+				add(parseManagementListenAddr(raw))
+			}
+		}
+	}
+	return out
+}
+
+func probeOpenVPNManagement(ctx context.Context, confPath, defaultAddr string, mgmt *OpenVPNManagement, timeout time.Duration) (bool, string) {
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	addrs := managementAddrsToProbe(confPath, defaultAddr)
+	if len(addrs) == 0 {
+		return false, ""
+	}
+	for _, addr := range addrs {
+		probe := &OpenVPNManagement{Addr: addr, Timeout: timeout}
+		if mgmt != nil && mgmt.Timeout > 0 {
+			probe.Timeout = mgmt.Timeout
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		_, err := probe.GetClients(probeCtx)
+		cancel()
+		if err == nil {
+			return true, addr
+		}
+	}
+	return false, addrs[0]
+}
+
+func openVPNServiceProcessRunning(info *OpenVPNRuntimeInfo) bool {
+	if info == nil {
+		return false
+	}
+	active := strings.EqualFold(strings.TrimSpace(info.ActiveState), "active")
+	if !active {
+		return false
+	}
+	if info.MainPID > 0 {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(info.SubState), "running")
 }
 
 func resolveServerLogPath(info *OpenVPNRuntimeInfo, overridePath string) {
@@ -342,7 +424,7 @@ func detectOpenVPNServiceState(ctx context.Context, info *OpenVPNRuntimeInfo) {
 	if unit == "" {
 		unit = "openvpn.service"
 	}
-	info.ServiceUnit = unit
+	info.ServiceUnit = DetectOpenVPNServiceUnit(unit)
 
 	showCtx, cancelShow := context.WithTimeout(ctx, 4*time.Second)
 	defer cancelShow()
