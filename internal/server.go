@@ -374,6 +374,17 @@ func (s *AgentServer) openvpnApplyConfig(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "OPENVPN_SERVER_CONF is not set", http.StatusServiceUnavailable)
 			return
 		}
+		var body struct {
+			Settings map[string]any `json:"settings"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		serviceUnit := DetectOpenVPNServiceUnit(s.ServiceUnit)
+		if body.Settings != nil {
+			if _, err := StageServerSettings(s.ServerConfPath, serviceUnit, body.Settings); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 		stagedPath, confPath, stagedErr := findStagedServerConfig(s.ServerConfPath, s.ServiceUnit)
 		if stagedErr != nil {
 			if os.IsNotExist(stagedErr) {
@@ -384,7 +395,6 @@ func (s *AgentServer) openvpnApplyConfig(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		restartCommand := s.serviceCommand("restart")
-		serviceUnit := DetectOpenVPNServiceUnit(s.ServiceUnit)
 		if restartCommand == "" {
 			restartCommand = "systemctl restart " + serviceUnit
 		}

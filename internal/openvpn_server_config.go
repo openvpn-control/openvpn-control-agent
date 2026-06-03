@@ -201,6 +201,38 @@ var settingsWriteOrder = []string{
 
 // MergeServerSettings оставляет неуправляемые строки как есть,
 // а управляемые записывает в фиксированном порядке settingsWriteOrder.
+// mergeManagedSettingsOverlay starts from directives already in server.conf, then applies panel settings.
+// Пустое значение в settings снимает директиву; отсутствующий ключ в settings не трогает файл.
+func mergeManagedSettingsOverlay(existing, overlay map[string]any) map[string]any {
+	norm := map[string]any{}
+	for key, val := range existing {
+		k := strings.ToLower(strings.TrimSpace(key))
+		if managedServerKeys[k] {
+			norm[k] = val
+		}
+	}
+	for key, val := range overlay {
+		k := strings.ToLower(strings.TrimSpace(key))
+		if !managedServerKeys[k] {
+			continue
+		}
+		if val == nil {
+			delete(norm, k)
+			continue
+		}
+		if isBoolDirective(k) {
+			norm[k] = val
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(val)) == "" {
+			delete(norm, k)
+			continue
+		}
+		norm[k] = val
+	}
+	return norm
+}
+
 func MergeServerSettings(confPath string, settings map[string]any) ([]byte, error) {
 	var kept []string
 	if _, err := os.Stat(confPath); err == nil {
@@ -227,11 +259,8 @@ func MergeServerSettings(confPath string, settings map[string]any) ([]byte, erro
 		}
 	}
 
-	norm := map[string]any{}
-	for key, val := range settings {
-		k := strings.ToLower(strings.TrimSpace(key))
-		norm[k] = val
-	}
+	existing, _ := ReadServerSettings(confPath)
+	norm := mergeManagedSettingsOverlay(existing, settings)
 
 	var managed []string
 	for _, k := range settingsWriteOrder {

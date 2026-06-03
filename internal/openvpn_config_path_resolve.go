@@ -267,12 +267,10 @@ func effectiveServerConfigPaths(envConfPath, preferredUnit string) (confPath str
 }
 
 func findStagedServerConfig(envConfPath, preferredUnit string) (stagedPath, confPath string, err error) {
-	confPath, dirs := effectiveServerConfigPaths(envConfPath, preferredUnit)
-	for _, dir := range dirs {
-		candidate := filepath.Join(dir, stagedServerConfigName)
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			return candidate, confPath, nil
-		}
+	confPath, _ = effectiveServerConfigPaths(envConfPath, preferredUnit)
+	stagedPath = filepath.Join(filepath.Dir(confPath), stagedServerConfigName)
+	if _, statErr := os.Stat(stagedPath); statErr == nil {
+		return stagedPath, confPath, nil
 	}
 	return "", confPath, os.ErrNotExist
 }
