@@ -279,6 +279,9 @@ func MergeServerSettings(confPath string, settings map[string]any) ([]byte, erro
 	if len(kept) > 0 && len(managed) > 0 && strings.TrimSpace(kept[len(kept)-1]) != "" {
 		b.WriteByte('\n')
 	}
+	if len(managed) > 0 {
+		b.WriteString("# openvpn-control: managed directives\n")
+	}
 	for _, ln := range managed {
 		b.WriteString(ln)
 		b.WriteByte('\n')
@@ -664,11 +667,31 @@ func StageServerSettings(confPath, serviceUnit string, settings map[string]any) 
 	return tmp, nil
 }
 
-// ApplyServerSettingsInstall записывает server.conf напрямую и перезапускает службу.
-func ApplyServerSettingsInstall(confPath, serviceUnit, restartCommand string, settings map[string]any) (*ApplyConfigResult, error) {
+// ApplyServerSettingsInstall проверяет конфиг, записывает server.conf и перезапускает службу.
+func ApplyServerSettingsInstall(confPath, openvpnBin, serviceUnit, restartCommand string, settings map[string]any) (*ApplyConfigResult, error) {
 	data, err := BuildServerConfigBytes(confPath, serviceUnit, settings)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(openvpnBin) == "" {
+		openvpnBin = "openvpn"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	checkPath, cleanup, err := writeCheckConfigPreview(filepath.Dir(confPath), data, serviceUnit)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	extra := execStartCryptoArgsForValidate(serviceUnit)
+	hints, output, vErr := ValidateOpenVPNConfig(ctx, openvpnBin, checkPath, extra)
+	if vErr != nil {
+		return nil, &ApplyConfigFailure{
+			Err:        fmt.Errorf("config validation: %w", vErr),
+			Hints:      hints,
+			Output:     output,
+			Validation: true,
+		}
 	}
 	stagedPath := filepath.Join(filepath.Dir(confPath), stagedServerConfigName)
 	return applyServerConfigBytes(confPath, stagedPath, data, restartCommand, serviceUnit)
@@ -759,6 +782,7 @@ type ApplyConfigFailure struct {
 	ServiceLog string
 	RolledBack bool
 	BackupPath string
+	Validation bool
 }
 
 func (e *ApplyConfigFailure) Error() string {

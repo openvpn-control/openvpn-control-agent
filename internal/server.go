@@ -115,13 +115,14 @@ func (s *AgentServer) openvpnRawConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "OPENVPN_SERVER_CONF is not set", http.StatusServiceUnavailable)
 			return
 		}
-		raw, err := os.ReadFile(s.ServerConfPath)
+		confPath := EffectiveServerConfigPath(s.ServerConfPath, s.ServiceUnit)
+		raw, err := os.ReadFile(confPath)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"configPath": s.ServerConfPath,
+			"configPath": confPath,
 			"rawConfig":  string(raw),
 		})
 	})(w, r)
@@ -211,14 +212,15 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			settings, err := ReadServerSettings(s.ServerConfPath)
+			confPath := EffectiveServerConfigPath(s.ServerConfPath, s.ServiceUnit)
+			settings, err := ReadServerSettings(confPath)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"settings":   settings,
-				"configPath": s.ServerConfPath,
+				"configPath": confPath,
 			})
 		case http.MethodPost:
 			var body struct {
@@ -234,6 +236,7 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			unit := DetectOpenVPNServiceUnit(s.ServiceUnit)
+			confPath := EffectiveServerConfigPath(s.ServerConfPath, s.ServiceUnit)
 			runValidate := true
 			if body.Validate != nil {
 				runValidate = *body.Validate
@@ -243,7 +246,7 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 				if bin == "" {
 					bin = "openvpn"
 				}
-				stagedPath, hints, err := ApplyServerSettings(s.ServerConfPath, bin, unit, body.Settings)
+				stagedPath, hints, err := ApplyServerSettings(confPath, bin, unit, body.Settings)
 				if err != nil {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnprocessableEntity)
@@ -258,11 +261,11 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 					"ok":               true,
 					"message":          "Временный конфиг сохранён и прошёл проверку.",
 					"stagedConfigPath": stagedPath,
-					"configPath":       s.ServerConfPath,
+					"configPath":       confPath,
 				})
 				return
 			}
-			stagedPath, err := StageServerSettings(s.ServerConfPath, unit, body.Settings)
+			stagedPath, err := StageServerSettings(confPath, unit, body.Settings)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -271,7 +274,7 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 				"ok":               true,
 				"message":          "Временный конфиг сохранён.",
 				"stagedConfigPath": stagedPath,
-				"configPath":       s.ServerConfPath,
+				"configPath":       confPath,
 			})
 		default:
 			w.Header().Set("Allow", "GET, POST")
@@ -327,7 +330,7 @@ func (s *AgentServer) openvpnCheckConfig(w http.ResponseWriter, r *http.Request)
 		if bin == "" {
 			bin = "openvpn"
 		}
-		confPath, _ := effectiveServerConfigPaths(s.ServerConfPath, s.ServiceUnit)
+		confPath := EffectiveServerConfigPath(s.ServerConfPath, s.ServiceUnit)
 		dir := filepath.Dir(confPath)
 		stagedPath := filepath.Join(dir, stagedServerConfigName)
 		targetPath := confPath
@@ -398,68 +401,38 @@ func (s *AgentServer) openvpnApplyConfig(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		var body struct {
-			Settings map[string]any `json:"settings"`
+			RawConfig string `json:"rawConfig"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(body.RawConfig) == "" {
+			http.Error(w, "rawConfig required", http.StatusBadRequest)
+			return
+		}
 		serviceUnit := DetectOpenVPNServiceUnit(s.ServiceUnit)
-		confPath, _ := effectiveServerConfigPaths(s.ServerConfPath, serviceUnit)
+		confPath := EffectiveServerConfigPath(s.ServerConfPath, serviceUnit)
 		restartCommand := s.serviceCommand("restart")
 		if restartCommand == "" {
 			restartCommand = "systemctl restart " + serviceUnit
 		}
-		var res *ApplyConfigResult
-		var applyErr error
-		var stagedPath string
-		if body.Settings != nil && len(body.Settings) > 0 {
-			res, applyErr = ApplyServerSettingsInstall(confPath, serviceUnit, restartCommand, body.Settings)
-		} else {
-			var stagedErr error
-			stagedPath, confPath, stagedErr = findStagedServerConfig(s.ServerConfPath, s.ServiceUnit)
-			if stagedErr != nil {
-				if os.IsNotExist(stagedErr) {
-					http.Error(w, "settings required or staged config not found", http.StatusBadRequest)
-					return
-				}
-				http.Error(w, stagedErr.Error(), http.StatusInternalServerError)
-				return
-			}
-			res, applyErr = ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit)
-		}
-		if applyErr != nil {
-			fail, ok := applyErr.(*ApplyConfigFailure)
+		output, err := ApplyRawServerConfig(confPath, restartCommand, []byte(body.RawConfig))
+		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			if ok {
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"ok":              false,
-					"error":           fail.Error(),
-					"hints":           fail.Hints,
-					"output":          fail.Output,
-					"serviceLog":      fail.ServiceLog,
-					"rolledBack":      fail.RolledBack,
-					"backupPath":      fail.BackupPath,
-					"stagedConfigPath": stagedPath,
-				})
-				return
-			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":    false,
-				"error": applyErr.Error(),
+				"error": err.Error(),
+				"output": output,
 			})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":              true,
-			"message":         "Конфигурация применена. Служба OpenVPN перезапущена успешно.",
-			"backupPath":      res.BackupPath,
-			"output":          res.Output,
-			"serviceLog":      res.ServiceLog,
-			"configPath":      confPath,
-			"serviceUnit":     serviceUnit,
-			"stagedConfigPath": stagedPath,
+			"ok":         true,
+			"message":    "Конфигурация записана, служба OpenVPN перезапущена.",
+			"output":     output,
+			"configPath": confPath,
 		})
 	})(w, r)
 }

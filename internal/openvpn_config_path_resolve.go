@@ -274,3 +274,9 @@ func findStagedServerConfig(envConfPath, preferredUnit string) (stagedPath, conf
 	}
 	return "", confPath, os.ErrNotExist
 }
+
+// EffectiveServerConfigPath — путь server.conf, который использует systemd unit.
+func EffectiveServerConfigPath(envConfPath, preferredUnit string) string {
+	p, _ := effectiveServerConfigPaths(envConfPath, preferredUnit)
+	return p
+}
