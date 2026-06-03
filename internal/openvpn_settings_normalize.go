@@ -16,7 +16,7 @@ func normalizeServerSettings(settings map[string]any, serviceUnit string) {
 	normalizeCryptoSettings(settings)
 	normalizeManagementSetting(settings)
 	normalizeTunnelSettings(settings)
-	normalizeSystemdExecOverrides(settings, serviceUnit)
+	// Директивы из ExecStart unit снимаются только при записи файла (mutateConfigForOpenVPN).
 }
 
 func normalizeTunnelSettings(settings map[string]any) {
