@@ -364,6 +364,8 @@ func writeMutatedCheckConfig(src, serviceUnit string) (path string, cleanup func
 const (
 	openvpnValidateCheckPort      = 61194
 	openvpnValidateManagementPort = 7506
+	openvpnValidateDev            = "tun99"
+	openvpnValidateTapDev         = "tap99"
 )
 
 // ValidateOpenVPNConfig запускает openvpn с конфигом; при ошибках парсинга процесс обычно сразу пишет в stderr.
@@ -517,6 +519,10 @@ func hintsForOpenVPNOutput(log string) []string {
 	if strings.Contains(low, "address already in use") || strings.Contains(low, "errno=98") {
 		h = append(h, "Порт занят: OpenVPN уже запущен. Агент проверяет конфиг на отдельном порту — обновите openvpn-control-agent.")
 	}
+	if strings.Contains(low, "tunsetiff") || strings.Contains(low, "device or resource busy") || strings.Contains(low, "errno=16") {
+		h = append(h, "Интерфейс TUN/TAP занят работающим OpenVPN. Проверка должна использовать отдельный dev (tun99) — обновите openvpn-control-agent.")
+		return h
+	}
 	if strings.Contains(low, "must define dh") || strings.Contains(low, "--dh") {
 		h = append(h, "Задайте директиву dh (путь к файлу DH) в настройках OpenVPN и создайте/импортируйте DH на вкладке «Сертификаты и ключи» (обычно /etc/openvpn/dh.pem).")
 	}
@@ -529,7 +535,7 @@ func hintsForOpenVPNOutput(log string) []string {
 	if strings.Contains(low, "options error") && (strings.Contains(low, "cipher") || strings.Contains(low, "must define")) {
 		h = append(h, "Для OpenVPN 2.5+ укажите data-ciphers (например AES-256-GCM:AES-128-GCM) и не используйте устаревший cipher.")
 	}
-	if strings.Contains(low, "auth") && (strings.Contains(low, "gcm") || strings.Contains(low, "aead") || strings.Contains(low, "data-ciphers")) {
+	if strings.Contains(low, "options error") && strings.Contains(low, "auth") {
 		h = append(h, "При шифрах AES-*-GCM в data-ciphers уберите директиву auth из server.conf (панель больше не добавляет auth SHA256 для GCM).")
 	}
 	if strings.Contains(low, "management") {
@@ -600,19 +606,27 @@ func rewriteInvalidGroupInConfig(data []byte) []byte {
 	return []byte(strings.Join(out, "\n"))
 }
 
-// ApplyServerSettings пишет черновой конфиг во временный файл рядом с рабочим и проверяет его OpenVPN.
-func ApplyServerSettings(confPath, openvpnBin, serviceUnit string, settings map[string]any) (tmpPath string, hints []string, err error) {
+// StageServerSettings пишет черновой server.conf без запуска openvpn (для apply).
+func StageServerSettings(confPath, serviceUnit string, settings map[string]any) (tmpPath string, err error) {
 	normalizeServerSettings(settings, serviceUnit)
 	data, err := MergeServerSettings(confPath, settings)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	dir := filepath.Dir(confPath)
 	tmp := filepath.Join(dir, stagedServerConfigName)
 	if err := os.WriteFile(tmp, mutateConfigForOpenVPN(data, serviceUnit), 0o600); err != nil {
-		return "", nil, fmt.Errorf("write temp config: %w", err)
+		return "", fmt.Errorf("write temp config: %w", err)
 	}
+	return tmp, nil
+}
 
+// ApplyServerSettings пишет черновой конфиг и проверяет его запуском openvpn (кнопка «Проверить» / save с validate).
+func ApplyServerSettings(confPath, openvpnBin, serviceUnit string, settings map[string]any) (tmpPath string, hints []string, err error) {
+	tmp, err := StageServerSettings(confPath, serviceUnit, settings)
+	if err != nil {
+		return "", nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	extra := execStartCryptoArgsForValidate(serviceUnit)
@@ -622,11 +636,27 @@ func ApplyServerSettings(confPath, openvpnBin, serviceUnit string, settings map[
 	return tmp, nil, nil
 }
 
+func validateDevNameFromConfig(data []byte) string {
+	for _, raw := range strings.Split(string(data), "\n") {
+		tok := firstToken(stripInlineComment(raw))
+		if tok != "dev" {
+			continue
+		}
+		fields := strings.Fields(stripInlineComment(raw))
+		if len(fields) >= 2 && strings.HasPrefix(strings.ToLower(fields[1]), "tap") {
+			return openvpnValidateTapDev
+		}
+		break
+	}
+	return openvpnValidateDev
+}
+
 func rewriteValidateInstanceOverrides(data []byte) []byte {
+	devName := validateDevNameFromConfig(data)
 	var out []string
 	for _, raw := range strings.Split(string(data), "\n") {
 		tok := firstToken(stripInlineComment(raw))
-		if tok == "port" || tok == "management" || tok == "status" {
+		if tok == "port" || tok == "management" || tok == "status" || tok == "dev" {
 			continue
 		}
 		out = append(out, raw)
@@ -634,6 +664,7 @@ func rewriteValidateInstanceOverrides(data []byte) []byte {
 	out = append(out,
 		"",
 		"# openvpn-control: validate-only (production OpenVPN is already running)",
+		"dev "+devName,
 		fmt.Sprintf("port %d", openvpnValidateCheckPort),
 		fmt.Sprintf("management 127.0.0.1 %d", openvpnValidateManagementPort),
 	)

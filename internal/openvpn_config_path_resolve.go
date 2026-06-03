@@ -93,6 +93,13 @@ func configArgFromExecStartLine(line string) string {
 	return ""
 }
 
+func trimSystemdExecToken(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimRight(s, "}")
+	return strings.TrimSpace(s)
+}
+
 func configArgFromSystemdExecStart(execStart string) string {
 	execStart = strings.TrimSpace(execStart)
 	if execStart == "" {
@@ -102,12 +109,12 @@ func configArgFromSystemdExecStart(execStart string) string {
 	for _, part := range strings.Split(execStart, ";") {
 		part = strings.TrimSpace(part)
 		if strings.HasPrefix(part, "argv[]=") {
-			argv = append(argv, strings.TrimPrefix(part, "argv[]="))
+			argv = append(argv, trimSystemdExecToken(strings.TrimPrefix(part, "argv[]=")))
 		}
 	}
 	for i := 0; i < len(argv)-1; i++ {
 		if argv[i] == "--config" || argv[i] == "-config" {
-			return strings.TrimSpace(argv[i+1])
+			return trimSystemdExecToken(argv[i+1])
 		}
 	}
 	return ""

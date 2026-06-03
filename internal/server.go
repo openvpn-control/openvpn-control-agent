@@ -221,6 +221,7 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 		case http.MethodPost:
 			var body struct {
 				Settings map[string]any `json:"settings"`
+				Validate *bool          `json:"validate"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
@@ -230,27 +231,45 @@ func (s *AgentServer) openvpnSettings(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "settings required", http.StatusBadRequest)
 				return
 			}
-			bin := s.OpenVPNBin
-			if bin == "" {
-				bin = "openvpn"
-			}
 			unit := DetectOpenVPNServiceUnit(s.ServiceUnit)
-			stagedPath, hints, err := ApplyServerSettings(s.ServerConfPath, bin, unit, body.Settings)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnprocessableEntity)
+			runValidate := true
+			if body.Validate != nil {
+				runValidate = *body.Validate
+			}
+			if runValidate {
+				bin := s.OpenVPNBin
+				if bin == "" {
+					bin = "openvpn"
+				}
+				stagedPath, hints, err := ApplyServerSettings(s.ServerConfPath, bin, unit, body.Settings)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"error":            err.Error(),
+						"hints":            hints,
+						"stagedConfigPath": stagedPath,
+					})
+					return
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"error": err.Error(),
-					"hints": hints,
+					"ok":               true,
+					"message":          "Временный конфиг сохранён и прошёл проверку.",
 					"stagedConfigPath": stagedPath,
+					"configPath":       s.ServerConfPath,
 				})
 				return
 			}
+			stagedPath, err := StageServerSettings(s.ServerConfPath, unit, body.Settings)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":             true,
-				"message":        "Временный конфиг сохранён и прошёл проверку.",
+				"ok":               true,
+				"message":          "Временный конфиг сохранён.",
 				"stagedConfigPath": stagedPath,
-				"configPath":     s.ServerConfPath,
+				"configPath":       s.ServerConfPath,
 			})
 		default:
 			w.Header().Set("Allow", "GET, POST")
