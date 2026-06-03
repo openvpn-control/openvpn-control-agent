@@ -1,10 +1,121 @@
 # OpenVPN Control Agent
 
-Linux-агент для узла OpenVPN: HTTP API для панели, опрос **OpenVPN Management Interface**, метрики хоста, применение правил firewall/DNS по снимку с панели.
+**Лицензия:** [MIT](LICENSE) · **Сборка из исходников:** [BUILD-LINUX.md](BUILD-LINUX.md)
 
-Панель управления — отдельный репозиторий **openvpn-control-server**.
+## Установка
 
-**Лицензия:** [MIT](LICENSE) · **Безопасность:** [SECURITY.md](SECURITY.md) · **Вклад:** [CONTRIBUTING.md](CONTRIBUTING.md)
+Скачайте `.deb` или `.rpm` нужной архитектуры (amd64 / arm64) со [страницы релизов](https://github.com/openvpn-control/openvpn-control-agent/releases).
+
+### Debian / Ubuntu (apt)
+
+```bash
+cd /path/to/download
+sudo apt install ./openvpn-control-agent_<версия>_amd64.deb
+sudo systemctl enable --now openvpn-control-agent
+sudo systemctl status openvpn-control-agent --no-pager
+```
+
+Альтернатива без apt:
+
+```bash
+sudo dpkg -i openvpn-control-agent_<версия>_amd64.deb
+sudo apt install -f   # при необходимости — зависимости
+```
+
+### RHEL / AlmaLinux / Rocky / Fedora (dnf / yum)
+
+```bash
+cd /path/to/download
+sudo dnf install ./openvpn-control-agent-<версия>-1.x86_64.rpm
+sudo systemctl enable --now openvpn-control-agent
+sudo systemctl status openvpn-control-agent --no-pager
+```
+
+На системах без `dnf`:
+
+```bash
+sudo yum install ./openvpn-control-agent-<версия>-1.x86_64.rpm
+```
+
+### После установки
+
+1. При необходимости отредактируйте `/etc/default/openvpn-control-agent` (порт, management OpenVPN).
+2. Перезапустите службу: `sudo systemctl restart openvpn-control-agent`.
+3. Токен для панели: `sudo cat /var/lib/openvpn-control-agent/token`.
+
+Проверка на сервере:
+
+```bash
+curl -sS http://127.0.0.1:9443/health
+```
+
+С другой машины используйте **внешний IP** сервера, не `127.0.0.1`.
+
+## Файрвол: порт 9443/tcp
+
+Агент по умолчанию слушает **9443/tcp** (`AGENT_ADDR` в `/etc/default/openvpn-control-agent`). Откройте порт в ОС **и** в панели облачного провайдера (security group), если сервер в VPS.
+
+### Debian / Ubuntu (ufw)
+
+```bash
+sudo ufw allow 9443/tcp comment 'openvpn-control-agent'
+sudo ufw reload
+sudo ufw status
+```
+
+### RHEL / AlmaLinux / Rocky / CentOS Stream / Fedora (firewalld)
+
+```bash
+sudo firewall-cmd --permanent --add-port=9443/tcp
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-ports
+```
+
+### openSUSE (firewalld)
+
+```bash
+sudo firewall-cmd --permanent --add-port=9443/tcp
+sudo firewall-cmd --reload
+```
+
+### Если ufw и firewalld не используются (iptables)
+
+```bash
+sudo iptables -I INPUT -p tcp --dport 9443 -j ACCEPT
+# сохраните правила способом, принятым в вашем дистрибутиве
+```
+
+Пример для Debian/Ubuntu с `iptables-persistent`:
+
+```bash
+sudo netfilter-persistent save
+```
+
+### Проверка доступа снаружи
+
+На сервере:
+
+```bash
+ss -lntp | grep 9443
+curl -sS --connect-timeout 3 http://$(curl -4 -s ifconfig.me):9443/health
+```
+
+С другой машины:
+
+```bash
+curl -v http://<внешний-IP-сервера>:9443/health
+```
+
+Если локально отвечает, а снаружи **No route to host** или timeout — чаще всего блокирует **firewalld/ufw** или **файрвол хостинга**, не сам агент.
+
+## Переменные окружения
+
+| Переменная | По умолчанию |
+|------------|----------------|
+| `AGENT_ADDR` | `:9443` |
+| `AGENT_TOKEN_FILE` | `/var/lib/openvpn-control-agent/token` |
+| `OPENVPN_MGMT_ADDR` | `127.0.0.1:7505` |
+| `OPENVPN_NET_INTERFACE` | *(не задан)* |
 
 ## Сборка
 
@@ -12,51 +123,8 @@ Linux-агент для узла OpenVPN: HTTP API для панели, опро
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o openvpn-control-agent ./cmd/agent
 ```
 
-Подробности (статическая линковка, glibc, установка): [BUILD-LINUX.md](BUILD-LINUX.md).
-
-## Переменные окружения
-
-- `AGENT_ADDR` — слушать (по умолчанию `:9443`)
-- `OPENVPN_MGMT_ADDR` — management OpenVPN (по умолчанию `127.0.0.1:7505`)
-- `AGENT_TOKEN_FILE` — файл токена (по умолчанию `/var/lib/openvpn-control-agent/token`)
-- `OPENVPN_NET_INTERFACE` — опционально, например `tun0`
-
-Токен создаётся при первом запуске; его нужно указать в панели при добавлении узла.
-
-## Релизы (GitHub Actions)
-
-1. `git tag v1.0.0 && git push origin v1.0.0`
-2. **Releases → Create release** по тегу → **Publish release**
-3. Воркфлоу **Release agent binaries** прикрепит:
-   - `openvpn-control-agent-<тег>-linux-{amd64,arm64}` и `SHA256SUMS-binaries`
-   - `.deb` и `.rpm` (amd64/arm64) с unit `openvpn-control-agent.service` — `SHA256SUMS-packages` в каталоге пакетов
-
-**Установка из пакета (Debian/Ubuntu):**
-
-```bash
-sudo dpkg -i openvpn-control-agent_<версия>_amd64.deb
-sudo systemctl status openvpn-control-agent
-```
-
-**Установка из пакета (RHEL/Alma/Rocky):**
-
-```bash
-sudo rpm -ivh openvpn-control-agent-<версия>-1.x86_64.rpm
-sudo systemctl status openvpn-control-agent
-```
-
-После установки правьте `/etc/default/openvpn-control-agent`, затем `sudo systemctl restart openvpn-control-agent`. Токен: `/var/lib/openvpn-control-agent/token`.
-
-**Settings → Actions → General:** для загрузки ассетов к релизу нужны права **Read and write** у `GITHUB_TOKEN`.
-
 ## Тесты
 
 ```bash
 go test ./...
 ```
-
-См. [.github/workflows/ci-tests.yml](.github/workflows/ci-tests.yml).
-
-## Отказ от гарантий
-
-ПО поставляется «как есть» ([LICENSE](LICENSE)).

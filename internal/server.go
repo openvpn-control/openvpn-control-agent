@@ -141,10 +141,12 @@ func (s *AgentServer) authorize(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *AgentServer) metrics(w http.ResponseWriter, r *http.Request) {
 	s.authorize(func(w http.ResponseWriter, r *http.Request) {
-		clients, err := s.OpenVPN.GetClients(context.Background())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+		activeClients := 0
+		if s.OpenVPN != nil {
+			clients, err := s.OpenVPN.GetClients(context.Background())
+			if err == nil {
+				activeClients = len(clients)
+			}
 		}
 
 		snapshot, err := s.System.Snapshot()
@@ -163,7 +165,7 @@ func (s *AgentServer) metrics(w http.ResponseWriter, r *http.Request) {
 			"networkInBps":     snapshot.NetworkInBps,
 			"networkOutBps":    snapshot.NetworkOutBps,
 			"networkInterface": snapshot.NetworkInterface,
-			"activeClients":    len(clients),
+			"activeClients":    activeClients,
 		}
 		json.NewEncoder(w).Encode(payload)
 	})(w, r)
