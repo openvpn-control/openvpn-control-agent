@@ -3,6 +3,8 @@ package internal
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net"
 	"os"
@@ -314,22 +316,43 @@ func (s *AgentServer) openvpnCheckConfig(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "OPENVPN_SERVER_CONF is not set", http.StatusServiceUnavailable)
 			return
 		}
+		var body struct {
+			Settings map[string]any `json:"settings"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 		bin := s.OpenVPNBin
 		if bin == "" {
 			bin = "openvpn"
 		}
-		dir := filepath.Dir(s.ServerConfPath)
+		confPath, _ := effectiveServerConfigPaths(s.ServerConfPath, s.ServiceUnit)
+		dir := filepath.Dir(confPath)
 		stagedPath := filepath.Join(dir, stagedServerConfigName)
-		targetPath := s.ServerConfPath
+		targetPath := confPath
 		checkedSource := "active"
-		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("source")), "staged") {
+		unit := DetectOpenVPNServiceUnit(s.ServiceUnit)
+		var checkPath string
+		var cleanup func()
+		var prepErr error
+		if body.Settings != nil && len(body.Settings) > 0 {
+			preview, buildErr := BuildServerConfigBytes(confPath, unit, body.Settings)
+			if buildErr != nil {
+				http.Error(w, buildErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			checkPath, cleanup, prepErr = writeCheckConfigPreview(dir, preview, unit)
+			checkedSource = "preview"
+		} else if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("source")), "staged") {
 			if _, statErr := os.Stat(stagedPath); statErr == nil {
 				targetPath = stagedPath
 				checkedSource = "staged"
 			}
+			checkPath, cleanup, prepErr = writeMutatedCheckConfig(targetPath, unit)
+		} else {
+			checkPath, cleanup, prepErr = writeMutatedCheckConfig(targetPath, unit)
 		}
-		unit := DetectOpenVPNServiceUnit(s.ServiceUnit)
-		checkPath, cleanup, prepErr := writeMutatedCheckConfig(targetPath, unit)
 		if prepErr != nil {
 			http.Error(w, prepErr.Error(), http.StatusInternalServerError)
 			return
@@ -347,7 +370,7 @@ func (s *AgentServer) openvpnCheckConfig(w http.ResponseWriter, r *http.Request)
 				"output":        output,
 				"command":       commandStr,
 				"hints":         hints,
-				"configPath":    targetPath,
+				"configPath":    confPath,
 				"checkedSource": checkedSource,
 			})
 			return
@@ -357,7 +380,7 @@ func (s *AgentServer) openvpnCheckConfig(w http.ResponseWriter, r *http.Request)
 			"message":       "Конфигурация OpenVPN прошла проверку.",
 			"output":        output,
 			"command":       commandStr,
-			"configPath":    targetPath,
+			"configPath":    confPath,
 			"checkedSource": checkedSource,
 		})
 	})(w, r)
@@ -377,28 +400,34 @@ func (s *AgentServer) openvpnApplyConfig(w http.ResponseWriter, r *http.Request)
 		var body struct {
 			Settings map[string]any `json:"settings"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		serviceUnit := DetectOpenVPNServiceUnit(s.ServiceUnit)
-		if body.Settings != nil {
-			if _, err := StageServerSettings(s.ServerConfPath, serviceUnit, body.Settings); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		stagedPath, confPath, stagedErr := findStagedServerConfig(s.ServerConfPath, s.ServiceUnit)
-		if stagedErr != nil {
-			if os.IsNotExist(stagedErr) {
-				http.Error(w, "staged config not found; save settings first", http.StatusBadRequest)
-				return
-			}
-			http.Error(w, stagedErr.Error(), http.StatusInternalServerError)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		serviceUnit := DetectOpenVPNServiceUnit(s.ServiceUnit)
+		confPath, _ := effectiveServerConfigPaths(s.ServerConfPath, serviceUnit)
 		restartCommand := s.serviceCommand("restart")
 		if restartCommand == "" {
 			restartCommand = "systemctl restart " + serviceUnit
 		}
-		res, applyErr := ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit)
+		var res *ApplyConfigResult
+		var applyErr error
+		var stagedPath string
+		if body.Settings != nil && len(body.Settings) > 0 {
+			res, applyErr = ApplyServerSettingsInstall(confPath, serviceUnit, restartCommand, body.Settings)
+		} else {
+			var stagedErr error
+			stagedPath, confPath, stagedErr = findStagedServerConfig(s.ServerConfPath, s.ServiceUnit)
+			if stagedErr != nil {
+				if os.IsNotExist(stagedErr) {
+					http.Error(w, "settings required or staged config not found", http.StatusBadRequest)
+					return
+				}
+				http.Error(w, stagedErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			res, applyErr = ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit)
+		}
 		if applyErr != nil {
 			fail, ok := applyErr.(*ApplyConfigFailure)
 			w.Header().Set("Content-Type", "application/json")

@@ -380,10 +380,15 @@ func writeMutatedCheckConfig(src, serviceUnit string) (path string, cleanup func
 		return "", nil, err
 	}
 	data = mutateConfigForOpenVPN(data, serviceUnit)
+	return writeCheckConfigPreview(filepath.Dir(src), data, serviceUnit)
+}
+
+// writeCheckConfigPreview writes ~agent.check.conf (validate-only overrides when service is running).
+func writeCheckConfigPreview(dir string, data []byte, serviceUnit string) (path string, cleanup func(), err error) {
 	if openVPNServiceIsActive(serviceUnit) {
 		data = rewriteValidateInstanceOverrides(data)
 	}
-	tmp := filepath.Join(filepath.Dir(src), checkServerConfigName)
+	tmp := filepath.Join(dir, checkServerConfigName)
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return "", nil, err
 	}
@@ -635,19 +640,38 @@ func rewriteInvalidGroupInConfig(data []byte) []byte {
 	return []byte(strings.Join(out, "\n"))
 }
 
-// StageServerSettings пишет черновой server.conf без запуска openvpn (для apply).
-func StageServerSettings(confPath, serviceUnit string, settings map[string]any) (tmpPath string, err error) {
+// BuildServerConfigBytes собирает server.conf из текущего файла и настроек панели.
+func BuildServerConfigBytes(confPath, serviceUnit string, settings map[string]any) ([]byte, error) {
 	normalizeServerSettings(settings, serviceUnit)
 	data, err := MergeServerSettings(confPath, settings)
+	if err != nil {
+		return nil, err
+	}
+	return mutateConfigForOpenVPN(data, serviceUnit), nil
+}
+
+// StageServerSettings пишет черновой server.conf без запуска openvpn (для apply).
+func StageServerSettings(confPath, serviceUnit string, settings map[string]any) (tmpPath string, err error) {
+	data, err := BuildServerConfigBytes(confPath, serviceUnit, settings)
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Dir(confPath)
 	tmp := filepath.Join(dir, stagedServerConfigName)
-	if err := os.WriteFile(tmp, mutateConfigForOpenVPN(data, serviceUnit), 0o600); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return "", fmt.Errorf("write temp config: %w", err)
 	}
 	return tmp, nil
+}
+
+// ApplyServerSettingsInstall записывает server.conf напрямую и перезапускает службу.
+func ApplyServerSettingsInstall(confPath, serviceUnit, restartCommand string, settings map[string]any) (*ApplyConfigResult, error) {
+	data, err := BuildServerConfigBytes(confPath, serviceUnit, settings)
+	if err != nil {
+		return nil, err
+	}
+	stagedPath := filepath.Join(filepath.Dir(confPath), stagedServerConfigName)
+	return applyServerConfigBytes(confPath, stagedPath, data, restartCommand, serviceUnit)
 }
 
 // ApplyServerSettings пишет черновой конфиг и проверяет его запуском openvpn (кнопка «Проверить» / save с validate).
@@ -745,14 +769,6 @@ func (e *ApplyConfigFailure) Error() string {
 }
 
 func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit string) (*ApplyConfigResult, error) {
-	backupPath, err := createConfigBackup(confPath)
-	if err != nil {
-		return nil, &ApplyConfigFailure{
-			Err:   fmt.Errorf("backup: %w", err),
-			Hints: []string{"Проверьте права записи в каталог конфигурации OpenVPN."},
-		}
-	}
-
 	stagedData, err := os.ReadFile(stagedPath)
 	if err != nil {
 		return nil, &ApplyConfigFailure{
@@ -760,20 +776,32 @@ func ApplyStagedServerConfig(confPath, stagedPath, restartCommand, serviceUnit s
 			Hints: []string{"Временный конфиг не найден. Сохраните настройки и проверьте конфигурацию заново."},
 		}
 	}
-	stagedData = mutateConfigForOpenVPN(stagedData, serviceUnit)
+	return applyServerConfigBytes(confPath, stagedPath, stagedData, restartCommand, serviceUnit)
+}
+
+func applyServerConfigBytes(confPath, stagedPath string, data []byte, restartCommand, serviceUnit string) (*ApplyConfigResult, error) {
+	backupPath, err := createConfigBackup(confPath)
+	if err != nil {
+		return nil, &ApplyConfigFailure{
+			Err:   fmt.Errorf("backup: %w", err),
+			Hints: []string{"Проверьте права записи в каталог конфигурации OpenVPN."},
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(confPath), 0o755); err != nil {
 		return nil, &ApplyConfigFailure{
 			Err:   fmt.Errorf("create config dir: %w", err),
 			Hints: []string{"Создайте каталог " + filepath.Dir(confPath) + " или проверьте OPENVPN_SERVER_CONF на агенте."},
 		}
 	}
-	if err := os.WriteFile(confPath, stagedData, 0o600); err != nil {
+	if err := os.WriteFile(confPath, data, 0o600); err != nil {
 		return nil, &ApplyConfigFailure{
 			Err:   fmt.Errorf("install config: %w", err),
 			Hints: []string{"Проверьте права записи в каталог конфигурации OpenVPN."},
 		}
 	}
-	_ = os.Remove(stagedPath)
+	if stagedPath != "" {
+		_ = os.Remove(stagedPath)
+	}
 
 	if _, err := os.Stat(confPath); err != nil {
 		return nil, &ApplyConfigFailure{
