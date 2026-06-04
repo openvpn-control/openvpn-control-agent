@@ -44,6 +44,27 @@ ExecStart=/usr/sbin/openvpn --status %t/openvpn-server/status-%i.log --config %i
 	}
 }
 
+func TestConfigPathFromSystemdUnitFallsBackToServerInstance(t *testing.T) {
+	const unitBody = `[Service]
+WorkingDirectory=/etc/openvpn/server
+ExecStart=/usr/sbin/openvpn --config %i.conf
+`
+	dir := t.TempDir()
+	unitPath := filepath.Join(dir, "openvpn-server@.service")
+	if err := os.WriteFile(unitPath, []byte(unitBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldDirs := systemdUnitSearchDirs
+	systemdUnitSearchDirs = []string{dir}
+	defer func() { systemdUnitSearchDirs = oldDirs }()
+
+	got := configPathFromSystemdUnit("openvpn.service")
+	want := "/etc/openvpn/server/server.conf"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestExpandSystemdInstanceSpecifiers(t *testing.T) {
 	got := expandSystemdInstanceSpecifiers("%i.conf", "server")
 	if got != "server.conf" {

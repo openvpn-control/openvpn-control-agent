@@ -51,11 +51,11 @@ const (
 func DetectOpenVPNRuntimeInfo(ctx context.Context, bin, confPath, serverLogPath, mgmtAddr, serviceUnit string, mgmt *OpenVPNManagement) OpenVPNRuntimeInfo {
 	info := OpenVPNRuntimeInfo{
 		AgentVersion:   AgentVersion,
-		ConfigPath:     confPath,
 		ManagementAddr: mgmtAddr,
 		ServiceUnit:    strings.TrimSpace(serviceUnit),
 	}
 	info.ServiceUnit = detectOpenVPNServiceUnit(info.ServiceUnit)
+	info.ConfigPath = EffectiveServerConfigPath(confPath, info.ServiceUnit)
 
 	if bin == "" {
 		bin = "openvpn"
@@ -101,7 +101,7 @@ func DetectOpenVPNRuntimeInfo(ctx context.Context, bin, confPath, serverLogPath,
 	if mgmt != nil && mgmt.Timeout > 0 {
 		mgmtTimeout = mgmt.Timeout
 	}
-	if reachable, addr := probeOpenVPNManagement(ctx, confPath, mgmtAddr, mgmt, mgmtTimeout); reachable {
+	if reachable, addr := probeOpenVPNManagement(ctx, info.ConfigPath, mgmtAddr, mgmt, mgmtTimeout); reachable {
 		info.Running = true
 		if addr != "" {
 			info.ManagementAddr = addr
@@ -186,7 +186,8 @@ func openVPNServiceProcessRunning(info *OpenVPNRuntimeInfo) bool {
 	if info.MainPID > 0 {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(info.SubState), "running")
+	sub := strings.ToLower(strings.TrimSpace(info.SubState))
+	return sub == "running" || sub == "started"
 }
 
 func resolveServerLogPath(info *OpenVPNRuntimeInfo, overridePath string) {
@@ -422,9 +423,10 @@ func collectIncrementalServerLogs(info *OpenVPNRuntimeInfo) {
 func detectOpenVPNServiceState(ctx context.Context, info *OpenVPNRuntimeInfo) {
 	unit := strings.TrimSpace(info.ServiceUnit)
 	if unit == "" {
-		unit = "openvpn.service"
+		unit = "openvpn-server@server.service"
 	}
 	info.ServiceUnit = DetectOpenVPNServiceUnit(unit)
+	unit = info.ServiceUnit
 
 	showCtx, cancelShow := context.WithTimeout(ctx, 4*time.Second)
 	defer cancelShow()
@@ -441,18 +443,18 @@ func detectOpenVPNServiceState(ctx context.Context, info *OpenVPNRuntimeInfo) {
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "ActiveState=") {
-				info.ActiveState = strings.TrimPrefix(line, "ActiveState=")
+				info.ActiveState = strings.TrimSpace(strings.TrimPrefix(line, "ActiveState="))
 			} else if strings.HasPrefix(line, "SubState=") {
-				info.SubState = strings.TrimPrefix(line, "SubState=")
+				info.SubState = strings.TrimSpace(strings.TrimPrefix(line, "SubState="))
 			} else if strings.HasPrefix(line, "MainPID=") {
-				v := strings.TrimPrefix(line, "MainPID=")
+				v := strings.TrimSpace(strings.TrimPrefix(line, "MainPID="))
 				if v != "" && v != "0" {
 					var pid int
 					_, _ = fmt.Sscanf(v, "%d", &pid)
 					info.MainPID = pid
 				}
 			} else if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
-				info.ActiveSince = strings.TrimPrefix(line, "ActiveEnterTimestamp=")
+				info.ActiveSince = strings.TrimSpace(strings.TrimPrefix(line, "ActiveEnterTimestamp="))
 			}
 		}
 	}

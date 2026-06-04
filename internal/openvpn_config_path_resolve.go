@@ -15,15 +15,18 @@ func DetectOpenVPNServiceUnit(preferred string) string {
 }
 
 // ResolveServerConfigPath returns the config file path the active OpenVPN unit expects.
-// envPath (OPENVPN_SERVER_CONF) is used when systemd does not expose --config.
+// Сначала опрос systemd unit (openvpn-server@server и др.), затем OPENVPN_SERVER_CONF.
 func ResolveServerConfigPath(envPath, serviceUnit string) string {
 	envPath = strings.TrimSpace(envPath)
-	unit := strings.TrimSpace(serviceUnit)
+	unit := detectOpenVPNServiceUnit(serviceUnit)
 	if p := configPathFromSystemdUnit(unit); p != "" {
 		return p
 	}
 	if envPath != "" {
 		return envPath
+	}
+	if p := configPathFromInstalledUnitTemplate("openvpn-server@.service", "server"); p != "" {
+		return p
 	}
 	return "/etc/openvpn/server.conf"
 }
@@ -201,6 +204,21 @@ func parseOpenVPNUnitFileFirst(templateUnit string) (workingDir, configTemplate 
 }
 
 func configPathFromSystemdUnit(unit string) string {
+	if p := configPathForInstanceUnit(unit); p != "" {
+		return p
+	}
+	// generic openvpn.service не даёт instance — пробуем типичные instance unit.
+	if openVPNInstanceFromUnit(unit) == "" {
+		for _, fallback := range []string{"openvpn-server@server.service", "openvpn@server.service"} {
+			if p := configPathForInstanceUnit(fallback); p != "" {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+func configPathForInstanceUnit(unit string) string {
 	unit = strings.TrimSpace(unit)
 	instance := openVPNInstanceFromUnit(unit)
 	if instance == "" {

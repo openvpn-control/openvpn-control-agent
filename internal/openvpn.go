@@ -70,16 +70,43 @@ func (m *OpenVPNManagement) GetClients(ctx context.Context) ([]VPNClient, error)
 	return parseClientsFromLines(lines), nil
 }
 
+func virtualAddressFromClientList(parts []string, headerMap map[string]int) string {
+	for _, key := range []string{"Virtual Address", "Virtual IPv4 Address"} {
+		if addr := getPart(parts, indexByHeader(headerMap, key, -1)); addr != "" {
+			return addr
+		}
+	}
+	return getPart(parts, indexByHeader(headerMap, "Virtual Address", 3))
+}
+
 func parseClientsFromLines(lines []string) []VPNClient {
 	clients := make([]VPNClient, 0)
 	clientHeaderMap := map[string]int{}
+	routingHeaderMap := map[string]int{}
+	routingVIPByCN := map[string]string{}
 	for _, line := range lines {
 		fields := splitStatusFields(line)
 		if len(fields) == 0 {
 			continue
 		}
-		if fields[0] == "HEADER" && len(fields) > 2 && fields[1] == "CLIENT_LIST" {
-			clientHeaderMap = parseHeaderMap(fields[2:])
+		if fields[0] == "HEADER" && len(fields) > 2 {
+			switch fields[1] {
+			case "CLIENT_LIST":
+				clientHeaderMap = parseHeaderMap(fields[2:])
+			case "ROUTING_TABLE":
+				routingHeaderMap = parseHeaderMap(fields[2:])
+			}
+			continue
+		}
+		if fields[0] == "ROUTING_TABLE" {
+			cn := getPart(fields, indexByHeader(routingHeaderMap, "Common Name", 2))
+			vip := getPart(fields, indexByHeader(routingHeaderMap, "Virtual Address", 1))
+			if vip == "" {
+				vip = getPart(fields, indexByHeader(routingHeaderMap, "Virtual IPv4 Address", 1))
+			}
+			if cn != "" && vip != "" {
+				routingVIPByCN[cn] = vip
+			}
 			continue
 		}
 		if fields[0] == "CLIENT_LIST" {
@@ -89,7 +116,10 @@ func parseClientsFromLines(lines []string) []VPNClient {
 			}
 			commonName := getPart(parts, indexByHeader(clientHeaderMap, "Common Name", 1))
 			realAddr := getPart(parts, indexByHeader(clientHeaderMap, "Real Address", 2))
-			virtualAddr := getPart(parts, indexByHeader(clientHeaderMap, "Virtual Address", 3))
+			virtualAddr := virtualAddressFromClientList(parts, clientHeaderMap)
+			if virtualAddr == "" {
+				virtualAddr = routingVIPByCN[commonName]
+			}
 			rxBytes, _ := parseUint64(getPart(parts, indexByHeader(clientHeaderMap, "Bytes Received", 5)))
 			txBytes, _ := parseUint64(getPart(parts, indexByHeader(clientHeaderMap, "Bytes Sent", 6)))
 			connectedSince := getPart(parts, indexByHeader(clientHeaderMap, "Connected Since (time_t)", 8))

@@ -295,10 +295,11 @@ func (s *AgentServer) openvpnInfo(w http.ResponseWriter, r *http.Request) {
 		if s.OpenVPN != nil {
 			mgmtAddr = s.OpenVPN.Addr
 		}
+		confPath := EffectiveServerConfigPath(s.ServerConfPath, s.ServiceUnit)
 		info := DetectOpenVPNRuntimeInfo(
 			context.Background(),
 			s.OpenVPNBin,
-			s.ServerConfPath,
+			confPath,
 			s.ServerLogPath,
 			mgmtAddr,
 			s.ServiceUnit,

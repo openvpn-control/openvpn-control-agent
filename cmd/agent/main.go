@@ -32,12 +32,15 @@ func main() {
 	}
 	log.Printf("Agent token file: %s", tokenPath)
 
-	preferredUnit := envOrDefault("OPENVPN_SERVICE_UNIT", "openvpn.service")
+	preferredUnit := envOrDefault("OPENVPN_SERVICE_UNIT", "openvpn-server@server.service")
 	detectedUnit := internal.DetectOpenVPNServiceUnit(preferredUnit)
 	envServerConf := envOrDefault("OPENVPN_SERVER_CONF", "/etc/openvpn/server.conf")
 	resolvedConf := internal.ResolveServerConfigPath(envServerConf, detectedUnit)
+	log.Printf("OpenVPN unit: %s (preferred %s)", detectedUnit, preferredUnit)
 	if resolvedConf != envServerConf {
-		log.Printf("OpenVPN config path: %s (from unit %s; OPENVPN_SERVER_CONF was %s)", resolvedConf, detectedUnit, envServerConf)
+		log.Printf("OpenVPN config path: %s (OPENVPN_SERVER_CONF was %s)", resolvedConf, envServerConf)
+	} else {
+		log.Printf("OpenVPN config path: %s", resolvedConf)
 	}
 
 	server := &internal.AgentServer{
@@ -52,7 +55,7 @@ func main() {
 		ServerConfPath: resolvedConf,
 		ServerLogPath:  os.Getenv("OPENVPN_SERVER_LOG"),
 		OpenVPNBin:     envOrDefault("OPENVPN_BINARY", "openvpn"),
-		ServiceUnit:    preferredUnit,
+		ServiceUnit:    detectedUnit,
 		ReloadCmd:      os.Getenv("OPENVPN_RELOAD_CMD"),
 		AgentServiceUnit: envOrDefault("AGENT_SERVICE_UNIT", "openvpn-control-agent.service"),
 		AgentRestartCmd:  os.Getenv("AGENT_RESTART_CMD"),

@@ -13,6 +13,12 @@ func TestOpenVPNServiceProcessRunning(t *testing.T) {
 	if !openVPNServiceProcessRunning(&OpenVPNRuntimeInfo{ActiveState: "active", MainPID: 248670}) {
 		t.Fatal("expected running")
 	}
+	if !openVPNServiceProcessRunning(&OpenVPNRuntimeInfo{ActiveState: "active", SubState: "started"}) {
+		t.Fatal("expected running for active/started")
+	}
+	if !openVPNServiceProcessRunning(&OpenVPNRuntimeInfo{ActiveState: "active", SubState: "running"}) {
+		t.Fatal("expected running for active/running")
+	}
 	if openVPNServiceProcessRunning(&OpenVPNRuntimeInfo{ActiveState: "inactive", MainPID: 0}) {
 		t.Fatal("expected not running")
 	}

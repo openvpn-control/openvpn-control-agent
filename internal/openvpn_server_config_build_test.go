@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestBuildServerConfigBytesIncludesRemoteCertTls(t *testing.T) {
+func TestBuildServerConfigBytesSkipsRemoteCertTlsOverlay(t *testing.T) {
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "server.conf")
 	if err := os.WriteFile(conf, []byte("port 1194\nproto udp\n"), 0o600); err != nil {
@@ -18,7 +18,7 @@ func TestBuildServerConfigBytesIncludesRemoteCertTls(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "remote-cert-tls client") {
-		t.Fatalf("expected remote-cert-tls in config:\n%s", text)
+	if strings.Contains(text, "remote-cert-tls") {
+		t.Fatalf("remote-cert-tls is client-only, must not be written to server.conf:\n%s", text)
 	}
 }
