@@ -145,8 +145,8 @@ func (s *AgentServer) authorize(next http.HandlerFunc) http.HandlerFunc {
 func (s *AgentServer) metrics(w http.ResponseWriter, r *http.Request) {
 	s.authorize(func(w http.ResponseWriter, r *http.Request) {
 		activeClients := 0
-		if s.OpenVPN != nil {
-			clients, err := s.OpenVPN.GetClients(context.Background())
+		if mgmt, _, err := s.resolveWorkingManagement(context.Background()); err == nil {
+			clients, err := mgmt.GetClients(context.Background())
 			if err == nil {
 				activeClients = len(clients)
 			}
@@ -176,12 +176,17 @@ func (s *AgentServer) metrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *AgentServer) clients(w http.ResponseWriter, r *http.Request) {
 	s.authorize(func(w http.ResponseWriter, r *http.Request) {
-		list, err := s.OpenVPN.GetClients(context.Background())
+		mgmt, _, err := s.resolveWorkingManagement(context.Background())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(list)
+		list, err := mgmt.GetClients(context.Background())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(list)
 	})(w, r)
 }
 
@@ -196,7 +201,12 @@ func (s *AgentServer) disconnectClient(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := s.OpenVPN.DisconnectClient(context.Background(), req.ID); err != nil {
+		mgmt, _, err := s.resolveWorkingManagement(context.Background())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := mgmt.DisconnectClient(context.Background(), req.ID); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}

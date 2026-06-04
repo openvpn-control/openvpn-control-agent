@@ -130,28 +130,6 @@ func parseManagementListenAddr(directive string) string {
 	return net.JoinHostPort(host, port)
 }
 
-func managementAddrsToProbe(confPath, defaultAddr string) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(addr string) {
-		addr = strings.TrimSpace(addr)
-		if addr == "" || seen[addr] {
-			return
-		}
-		seen[addr] = true
-		out = append(out, addr)
-	}
-	add(defaultAddr)
-	if confPath != "" {
-		if settings, err := ReadServerSettings(confPath); err == nil {
-			if raw, ok := settings["management"].(string); ok {
-				add(parseManagementListenAddr(raw))
-			}
-		}
-	}
-	return out
-}
-
 func probeOpenVPNManagement(ctx context.Context, confPath, defaultAddr string, mgmt *OpenVPNManagement, timeout time.Duration) (bool, string) {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
