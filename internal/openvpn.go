@@ -80,10 +80,11 @@ func virtualAddressFromClientList(parts []string, headerMap map[string]int) stri
 }
 
 func parseClientsFromLines(lines []string) []VPNClient {
-	clients := make([]VPNClient, 0)
 	clientHeaderMap := map[string]int{}
 	routingHeaderMap := map[string]int{}
 	routingVIPByCN := map[string]string{}
+	var clientRows [][]string
+
 	for _, line := range lines {
 		fields := splitStatusFields(line)
 		if len(fields) == 0 {
@@ -110,36 +111,39 @@ func parseClientsFromLines(lines []string) []VPNClient {
 			continue
 		}
 		if fields[0] == "CLIENT_LIST" {
-			parts := fields
-			if len(parts) < 3 {
-				continue
-			}
-			commonName := getPart(parts, indexByHeader(clientHeaderMap, "Common Name", 1))
-			realAddr := getPart(parts, indexByHeader(clientHeaderMap, "Real Address", 2))
-			virtualAddr := virtualAddressFromClientList(parts, clientHeaderMap)
-			if virtualAddr == "" {
-				virtualAddr = routingVIPByCN[commonName]
-			}
-			rxBytes, _ := parseUint64(getPart(parts, indexByHeader(clientHeaderMap, "Bytes Received", 5)))
-			txBytes, _ := parseUint64(getPart(parts, indexByHeader(clientHeaderMap, "Bytes Sent", 6)))
-			connectedSince := getPart(parts, indexByHeader(clientHeaderMap, "Connected Since (time_t)", 8))
-			if connectedSince == "" {
-				connectedSince = getPart(parts, indexByHeader(clientHeaderMap, "Connected Since", 7))
-			}
-			if commonName == "" || realAddr == "" {
-				continue
-			}
-			clients = append(clients, VPNClient{
-				ID:          fmt.Sprintf("%s|%s", commonName, connectedSince),
-				CommonName:  commonName,
-				RemoteIP:    realAddr,
-				VirtualIP:   virtualAddr,
-				ConnectedAt: connectedSince,
-				RxBytes:     rxBytes,
-				TxBytes:     txBytes,
-			})
+			clientRows = append(clientRows, fields)
+		}
+	}
+
+	clients := make([]VPNClient, 0, len(clientRows))
+	for _, parts := range clientRows {
+		if len(parts) < 3 {
 			continue
 		}
+		commonName := getPart(parts, indexByHeader(clientHeaderMap, "Common Name", 1))
+		realAddr := getPart(parts, indexByHeader(clientHeaderMap, "Real Address", 2))
+		virtualAddr := virtualAddressFromClientList(parts, clientHeaderMap)
+		if virtualAddr == "" {
+			virtualAddr = routingVIPByCN[commonName]
+		}
+		rxBytes, _ := parseUint64(getPart(parts, indexByHeader(clientHeaderMap, "Bytes Received", 5)))
+		txBytes, _ := parseUint64(getPart(parts, indexByHeader(clientHeaderMap, "Bytes Sent", 6)))
+		connectedSince := getPart(parts, indexByHeader(clientHeaderMap, "Connected Since (time_t)", 8))
+		if connectedSince == "" {
+			connectedSince = getPart(parts, indexByHeader(clientHeaderMap, "Connected Since", 7))
+		}
+		if commonName == "" || realAddr == "" {
+			continue
+		}
+		clients = append(clients, VPNClient{
+			ID:          fmt.Sprintf("%s|%s", commonName, connectedSince),
+			CommonName:  commonName,
+			RemoteIP:    realAddr,
+			VirtualIP:   virtualAddr,
+			ConnectedAt: connectedSince,
+			RxBytes:     rxBytes,
+			TxBytes:     txBytes,
+		})
 	}
 	return clients
 }
